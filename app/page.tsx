@@ -5,9 +5,13 @@ import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { useTranslations } from "next-intl";
+import { useSession } from "@/lib/auth/auth-client";
 
 export default function HomePage() {
   const t = useTranslations("home");
+  const { data: session } = useSession();
+  const isSignedIn = Boolean(session?.user && !session.user.isAnonymous);
+  const appHref = isSignedIn ? "/dashboard" : "/login";
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   return (
@@ -34,12 +38,12 @@ export default function HomePage() {
           {/* 桌面端导航 */}
           <div className="hidden md:flex items-center gap-3">
             <LanguageSwitcher />
-            <Link href="/login">
+            <Link href={appHref}>
               <Button variant="ghost" className="text-[#6B6860] hover:text-[#141413] hover:bg-[#D8D5CC]/50 rounded-lg px-4">
-                {t("login")}
+                {t(isSignedIn ? "continueUsing" : "login")}
               </Button>
             </Link>
-            <Link href="/login">
+            <Link href={appHref}>
               <Button className="bg-[#D97757] hover:bg-[#C96848] text-white rounded-lg px-5 shadow-sm hover:shadow-md transition-all">
                 {t("getStarted")}
               </Button>
@@ -68,12 +72,12 @@ export default function HomePage() {
         {/* 移动端下拉菜单 */}
         {mobileMenuOpen && (
           <div className="md:hidden bg-[#F5F3EC] border-t border-[#D8D5CC] px-4 py-4 space-y-3">
-            <Link href="/login" className="block" onClick={() => setMobileMenuOpen(false)}>
+            <Link href={appHref} className="block" onClick={() => setMobileMenuOpen(false)}>
               <Button variant="outline" className="w-full border-[#C8C4BC] text-[#6B6860]">
-                {t("login")}
+                {t(isSignedIn ? "continueUsing" : "login")}
               </Button>
             </Link>
-            <Link href="/login" className="block" onClick={() => setMobileMenuOpen(false)}>
+            <Link href={appHref} className="block" onClick={() => setMobileMenuOpen(false)}>
               <Button className="w-full bg-[#D97757] hover:bg-[#C96848] text-white">
                 {t("getStarted")}
               </Button>
@@ -160,14 +164,14 @@ export default function HomePage() {
 
           {/* CTA 按钮 - 移动端优化 */}
           <div className="flex flex-col sm:flex-row gap-3 md:gap-4 justify-start">
-            <Link href="/login">
+            <Link href={appHref}>
               <Button size="lg" className="w-full sm:w-auto bg-[#D97757] hover:bg-[#C96848] text-white text-base md:text-lg px-6 md:px-8 py-4 md:py-5 rounded-xl shadow-md hover:shadow-lg transition-all min-h-[52px] md:min-h-[60px]">
                 {t("ctaExperience")}
               </Button>
             </Link>
-            <Link href="/login">
+            <Link href={appHref}>
               <Button size="lg" variant="outline" className="w-full sm:w-auto border-[#C8C4BC] text-[#6B6860] hover:text-[#141413] hover:border-[#141413] text-base md:text-lg px-6 md:px-8 py-4 md:py-5 rounded-xl bg-transparent min-h-[52px] md:min-h-[60px]">
-                {t("ctaLoginHistory")}
+                {t(isSignedIn ? "continueUsing" : "ctaLoginHistory")}
               </Button>
             </Link>
           </div>

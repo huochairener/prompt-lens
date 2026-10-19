@@ -33,6 +33,7 @@
   },
   "home": {
     "login": "Login",
+    "continueUsing": "Continue to workspace",
     "getStarted": "Get Started",
     "heroTitle1": "Understand visuals with AI",
     "heroTitle2": "Generate prompts",

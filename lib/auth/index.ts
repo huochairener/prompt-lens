@@ -38,7 +38,7 @@ export const auth = betterAuth({
   baseURL: getBaseURL(),
   secret: process.env.BETTER_AUTH_SECRET,
   session: {
-    expiresIn: 60 * 60 * 24 * 7, // 7 days
+    expiresIn: 60 * 60 * 24 * 30, // Remember sign-ins for 30 days; renew on active use.
     updateAge: 60 * 60 * 24, // Update session every 24 hours
     freshAge: 60 * 5, // Consider session fresh for 5 minutes
     cookieCache: {
@@ -51,8 +51,13 @@ export const auth = betterAuth({
       generateId: () => crypto.randomUUID(),
     },
     cookies: {
-      sessionToken: {
+      session_token: {
         name: "better-auth.session_token",
+        attributes: {
+          httpOnly: true,
+          sameSite: "lax",
+          path: "/",
+        },
       },
     },
   },

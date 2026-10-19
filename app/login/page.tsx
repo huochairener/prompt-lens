@@ -1,11 +1,23 @@
 "use client";
 
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { useSession } from "@/lib/auth/auth-client";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { LoginGlobeBackground } from "@/components/login-globe-background";
+import { Spinner } from "@/components/ui/spinner";
 
 export default function LoginPage() {
+  const router = useRouter();
+  const { data: session, isPending } = useSession();
+  const isSignedIn = Boolean(session?.user && !session.user.isAnonymous);
+
+  useEffect(() => {
+    if (isSignedIn) router.replace("/dashboard");
+  }, [isSignedIn, router]);
+
   const handleOAuthSignIn = async (provider: "google" | "github") => {
     const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
     try {
@@ -36,6 +48,14 @@ export default function LoginPage() {
       alert("登录出错，请重试");
     }
   };
+
+  if (isPending || isSignedIn) {
+    return (
+      <div className="min-h-screen bg-anthropic flex items-center justify-center">
+        <Spinner size="lg" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-anthropic flex items-center justify-center p-4 relative">
