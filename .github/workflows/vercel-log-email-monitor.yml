@@ -2,9 +2,8 @@ name: Monitor Vercel production errors
 
 on:
   schedule:
-    # 12:00 and 18:00 Asia/Shanghai (UTC+8)
-    - cron: "0 4 * * *"
-    - cron: "0 10 * * *"
+    # Seven minutes after each UTC hour avoids peak scheduler load.
+    - cron: "7 * * * *"
   workflow_dispatch:
     inputs:
       send_test_email:
@@ -55,30 +54,12 @@ jobs:
           "vercel@$VERCEL_CLI_VERSION"
           "nodemailer@$NODEMAILER_VERSION"
 
-      - name: Calculate the non-overlapping log window
+      - name: Select the Hobby-compatible log window
         id: window
         shell: bash
-        env:
-          SCHEDULE_EXPRESSION: ${{ github.event.schedule }}
         run: |
           set -euo pipefail
-
-          case "$SCHEDULE_EXPRESSION" in
-            "0 4 * * *")
-              since="$(date -u -d 'yesterday' '+%Y-%m-%dT10:00:00Z')"
-              until="$(date -u '+%Y-%m-%dT04:00:00Z')"
-              ;;
-            "0 10 * * *")
-              since="$(date -u '+%Y-%m-%dT04:00:00Z')"
-              until="$(date -u '+%Y-%m-%dT10:00:00Z')"
-              ;;
-            *)
-              since="$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
-              until="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-              ;;
-          esac
-
-          printf 'since=%s\nuntil=%s\n' "$since" "$until" >> "$GITHUB_OUTPUT"
+          printf 'since=1h\nuntil=now\n' >> "$GITHUB_OUTPUT"
 
       - name: Collect production errors
         id: collect

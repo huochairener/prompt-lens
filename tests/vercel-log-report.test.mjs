@@ -145,4 +145,18 @@ describe("Vercel monitor workflow", () => {
     expect(workflow).not.toContain("--level error");
     expect(workflow).not.toContain("--status-code 5xx");
   });
+
+  it("uses hourly rolling windows that fit the Hobby log retention", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/vercel-log-email-monitor.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain('- cron: "7 * * * *"');
+    expect(workflow).toContain("printf 'since=1h\\nuntil=now\\n'");
+    expect(workflow).not.toContain("window_end_epoch");
+    expect(workflow).not.toContain('cron: "0 4 * * *"');
+    expect(workflow).not.toContain('cron: "0 10 * * *"');
+    expect(workflow).not.toContain("24 hours ago");
+  });
 });

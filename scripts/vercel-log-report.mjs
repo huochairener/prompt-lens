@@ -178,7 +178,7 @@ export function buildAlert({ logs, collectionFailures, projectName, forceTest = 
   if (forceTest) subjectParts.push("邮件通道测试");
 
   const lines = [
-    `${projectName} Vercel 每日生产日志巡检`,
+    `${projectName} Vercel 生产日志巡检`,
     `巡检时间：${formatShanghaiTime(new Date())}（北京时间）`,
     `错误日志：${logs.length} 条，错误签名：${groups.length} 个`,
     "",
