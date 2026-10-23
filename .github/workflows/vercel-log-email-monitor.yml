@@ -91,31 +91,30 @@ jobs:
           set +e
           vercel_cli="$RUNNER_TEMP/vercel-monitor/node_modules/.bin/vercel"
 
-          "$vercel_cli" logs \
+          "$vercel_cli" logs runtime \
             --project "$VERCEL_PROJECT_ID" \
             --scope "$VERCEL_SCOPE" \
             --environment production \
-            --branch main \
-            --level error \
-            --level fatal \
+            --query 'level:(error OR fatal)' \
             --since "$SINCE" \
             --until "$UNTIL" \
             --limit 1000 \
             --json \
+            --non-interactive \
             > "$RUNNER_TEMP/vercel-errors.jsonl" \
             2> "$RUNNER_TEMP/vercel-errors.stderr"
           errors_status=$?
 
-          "$vercel_cli" logs \
+          "$vercel_cli" logs requests \
             --project "$VERCEL_PROJECT_ID" \
             --scope "$VERCEL_SCOPE" \
             --environment production \
-            --branch main \
-            --status-code 5xx \
+            --query 'httpStatus >= 500 AND httpStatus < 600' \
             --since "$SINCE" \
             --until "$UNTIL" \
             --limit 1000 \
             --json \
+            --non-interactive \
             > "$RUNNER_TEMP/vercel-server-errors.jsonl" \
             2> "$RUNNER_TEMP/vercel-server-errors.stderr"
           server_errors_status=$?

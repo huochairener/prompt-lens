@@ -10,7 +10,7 @@ const MAX_FAILURE_LENGTH = 2_000;
 export function parseJsonLines(value) {
   const lines = value.split(/\r?\n/u).filter((line) => line.trim() !== "");
 
-  return lines.map((line, index) => {
+  const records = lines.map((line, index) => {
     try {
       return JSON.parse(line);
     } catch (error) {
@@ -19,12 +19,32 @@ export function parseJsonLines(value) {
       );
     }
   });
+
+  return records.flatMap((record) => {
+    if (record?.type === "summary") return [];
+    if (
+      (record?.type === "log" || record?.type === "request")
+      && record.data
+      && typeof record.data === "object"
+      && !Array.isArray(record.data)
+    ) {
+      return [record.data];
+    }
+    return [record];
+  });
 }
 
 function statusCodeOf(entry) {
-  const value = entry.statusCode ?? entry.status;
+  const value = entry.httpStatus ?? entry.statusCode ?? entry.status;
   const statusCode = Number(value);
   return Number.isFinite(statusCode) ? statusCode : null;
+}
+
+function deploymentIdOf(entry) {
+  const value = entry.deploymentId ?? entry.deployment?.id;
+  return value === undefined || value === null || value === ""
+    ? null
+    : String(value);
 }
 
 function timestampOf(entry) {
@@ -112,9 +132,15 @@ function groupLogs(logs) {
 
   for (const log of logs) {
     const statusCode = statusCodeOf(log);
+    const deploymentId = deploymentIdOf(log);
     const pathName = pathOf(log);
     const message = messageOf(log);
-    const fingerprint = [statusCode ?? "", pathName, normalizedMessage(message)].join("|");
+    const fingerprint = [
+      deploymentId ?? "",
+      statusCode ?? "",
+      pathName,
+      normalizedMessage(message),
+    ].join("|");
     const current = groups.get(fingerprint);
 
     if (current) {
@@ -129,6 +155,7 @@ function groupLogs(logs) {
       latest: timestampOf(log),
       level: String(log.level ?? "unknown"),
       statusCode,
+      deploymentId,
       path: pathName,
       message,
       requestId: log.requestId ? String(log.requestId) : null,
@@ -173,6 +200,7 @@ export function buildAlert({ logs, collectionFailures, projectName, forceTest = 
         `   最近发生：${formatShanghaiTime(group.latest)}`,
       );
       if (group.requestId) lines.push(`   Request ID：${group.requestId}`);
+      if (group.deploymentId) lines.push(`   Deployment ID：${group.deploymentId}`);
     }
 
     if (groups.length > MAX_GROUPS) {

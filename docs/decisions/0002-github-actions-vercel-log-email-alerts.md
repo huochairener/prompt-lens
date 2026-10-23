@@ -11,9 +11,9 @@
 
 使用 GitHub Actions 定时工作流，在每天北京时间 12:00 和 18:00 运行：
 
-1. 使用固定版本的 Vercel CLI 读取 `prompt-lens` 生产环境、`main` 分支的 `error`、`fatal` 和 `5xx` 日志。
+1. 使用固定版本的 Vercel CLI 读取 `prompt-lens` 生产环境的 `error`、`fatal` 和 `5xx` 日志。生产环境由 Vercel 项目的 Production Branch 配置约束到 `main`。
 2. 两次计划任务使用固定且不重叠的日志窗口，避免 GitHub 调度延迟造成漏报或重复。
-3. 对两类查询结果合并、去重并按错误签名聚合。
+3. 使用 Vercel CLI 65 的 `logs runtime`、`logs requests` 与 KQL 查询语法；解析 typed JSONL，忽略分页摘要，再对两类结果合并、去重并按部署 ID 与错误签名聚合。
 4. 没有可操作错误时不发邮件；发现错误或日志查询失败时，通过通用 SMTP 发邮件。
 5. 工作流权限限制为 `contents: read`，不得修改代码、提交、推送或部署。
 6. Vercel Token、SMTP 授权码和收件地址保存在 GitHub Actions Secrets 中。
@@ -38,7 +38,7 @@
 
 - 巡检由 GitHub 云端运行，不依赖用户电脑。
 - 无错误时保持安静，降低通知噪音。
-- 邮件包含错误路径、状态、次数、最近时间和样例消息，方便用户判断是否修复。
+- 邮件包含错误路径、状态、次数、最近时间、Deployment ID 和样例消息，方便用户判断错误来自哪个线上版本以及是否修复。
 - 固定项目 ID、生产环境和 `main` 分支，降低误查 V2 测试项目的风险。
 
 ### 代价与风险
@@ -50,7 +50,7 @@
 
 ## 验证计划
 
-1. 单元测试覆盖 JSONL 解析、错误筛选、跨查询去重、签名聚合和静默条件。
+1. 单元测试覆盖 typed JSONL 解析、分页摘要忽略、`httpStatus` 筛选、跨查询去重、按 Deployment ID 聚合和静默条件。
 2. 使用 `workflow_dispatch` 的测试邮件开关验证完整邮件通道。
 3. 关闭测试邮件开关手动运行，验证无错误时不发送邮件。
 4. 在可控条件下验证错误邮件和 Vercel 权限失败邮件。

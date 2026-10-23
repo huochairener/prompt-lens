@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
 
 import {
   buildAlert,
@@ -13,6 +14,26 @@ describe("parseJsonLines", () => {
     ).toEqual([{ level: "error", message: "boom" }]);
   });
 
+  it("unwraps typed Vercel records and ignores the pagination summary", () => {
+    const output = [
+      JSON.stringify({
+        type: "log",
+        data: {
+          level: "error",
+          message: "boom",
+          deploymentId: "dpl_current",
+        },
+      }),
+      JSON.stringify({ type: "summary", pagination: { next: null } }),
+    ].join("\n");
+
+    expect(parseJsonLines(output)).toEqual([{
+      level: "error",
+      message: "boom",
+      deploymentId: "dpl_current",
+    }]);
+  });
+
   it("fails loudly when the CLI output is not valid JSONL", () => {
     expect(() => parseJsonLines("Not authorized")).toThrow(
       /invalid Vercel JSONL/i,
@@ -25,7 +46,7 @@ describe("mergeActionableLogs", () => {
     const entries = mergeActionableLogs([
       { level: "warning", statusCode: 429, message: "rate limited" },
       { level: "error", statusCode: 200, message: "KIE API error (524)" },
-      { level: "info", statusCode: 502, message: "POST /api/analyze" },
+      { httpStatus: 502, message: "POST /api/analyze" },
       { level: "fatal", message: "worker crashed" },
     ]);
 
@@ -61,6 +82,7 @@ describe("buildAlert", () => {
           path: "/api/analyze",
           message: "KIE API error (524): request abc123 failed",
           timestamp: "2026-10-23T01:00:00.000Z",
+          deploymentId: "dpl_old",
         },
         {
           level: "error",
@@ -68,6 +90,7 @@ describe("buildAlert", () => {
           path: "/api/analyze",
           message: "KIE API error (524): request def456 failed",
           timestamp: "2026-10-23T02:00:00.000Z",
+          deploymentId: "dpl_old",
         },
       ],
       collectionFailures: ["5xx query: permission denied"],
@@ -78,6 +101,7 @@ describe("buildAlert", () => {
     expect(alert.subject).toContain("prompt-lens");
     expect(alert.text).toContain("/api/analyze");
     expect(alert.text).toContain("出现次数：2");
+    expect(alert.text).toContain("Deployment ID：dpl_old");
     expect(alert.text).toContain("permission denied");
     expect(alert.text).toContain("请登录 Vercel");
   });
@@ -103,5 +127,22 @@ describe("buildAlert", () => {
     expect(alert).not.toBeNull();
     expect(alert.subject).toContain("邮件通道测试");
     expect(alert.text).toContain("测试邮件");
+  });
+});
+
+describe("Vercel monitor workflow", () => {
+  it("uses the Vercel 65 typed log commands and KQL filters", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/vercel-log-email-monitor.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain('logs runtime \\\n');
+    expect(workflow).toContain("--query 'level:(error OR fatal)'");
+    expect(workflow).toContain('logs requests \\\n');
+    expect(workflow).toContain("--query 'httpStatus >= 500 AND httpStatus < 600'");
+    expect(workflow).not.toContain("--branch main");
+    expect(workflow).not.toContain("--level error");
+    expect(workflow).not.toContain("--status-code 5xx");
   });
 });
