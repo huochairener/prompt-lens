@@ -6,6 +6,12 @@ on:
     - cron: "0 4 * * *"
     - cron: "0 10 * * *"
   workflow_dispatch:
+    inputs:
+      send_test_email:
+        description: Send an email even when the selected log window is clean
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -135,4 +141,5 @@ jobs:
             --errors-status "${{ steps.collect.outputs.errors_status }}" \
             --server-errors "$RUNNER_TEMP/vercel-server-errors.jsonl" \
             --server-errors-stderr "$RUNNER_TEMP/vercel-server-errors.stderr" \
-            --server-errors-status "${{ steps.collect.outputs.server_errors_status }}"
+            --server-errors-status "${{ steps.collect.outputs.server_errors_status }}" \
+            --test-email "${{ inputs.send_test_email }}"

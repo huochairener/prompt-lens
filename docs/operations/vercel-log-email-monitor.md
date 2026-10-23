@@ -33,8 +33,8 @@ Vercel Token 和邮箱授权码只存入 GitHub Secrets。不要写入仓库文�
 
 1. 配置全部 Secrets。
 2. 打开仓库的 `Actions → Monitor Vercel production errors`。
-3. 选择 `Run workflow` 手动执行。
-4. 无错误时确认步骤成功且没有邮件。
-5. 如需验证邮件通道，可暂时使用一个可控的错误日志窗口手动测试，验证后恢复正常配置。
+3. 选择 `Run workflow`，勾选 `Send an email even when the selected log window is clean` 后手动执行。
+4. 确认工作流成功，并收到标题包含“邮件通道测试”的邮件。
+5. 后续普通手动运行和计划运行不勾选测试邮件；无错误时不会发送邮件。
 
 计划任务采用固定、不重叠的时间窗口：12:00 巡检前一日 18:00 至当日 12:00，18:00 巡检当日 12:00 至 18:00。GitHub 调度即使延迟，也不会因此产生时间缺口。

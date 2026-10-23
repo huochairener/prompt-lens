@@ -91,4 +91,17 @@ describe("buildAlert", () => {
       }),
     ).toBeNull();
   });
+
+  it("creates a test email when manual verification is requested", () => {
+    const alert = buildAlert({
+      logs: [],
+      collectionFailures: [],
+      projectName: "prompt-lens",
+      forceTest: true,
+    });
+
+    expect(alert).not.toBeNull();
+    expect(alert.subject).toContain("邮件通道测试");
+    expect(alert.text).toContain("测试邮件");
+  });
 });

@@ -141,13 +141,14 @@ function groupLogs(logs) {
   });
 }
 
-export function buildAlert({ logs, collectionFailures, projectName }) {
-  if (logs.length === 0 && collectionFailures.length === 0) return null;
+export function buildAlert({ logs, collectionFailures, projectName, forceTest = false }) {
+  if (logs.length === 0 && collectionFailures.length === 0 && !forceTest) return null;
 
   const groups = groupLogs(logs);
   const subjectParts = [];
   if (logs.length > 0) subjectParts.push(`${logs.length} 条生产错误`);
   if (collectionFailures.length > 0) subjectParts.push("巡检异常");
+  if (forceTest) subjectParts.push("邮件通道测试");
 
   const lines = [
     `${projectName} Vercel 每日生产日志巡检`,
@@ -155,6 +156,10 @@ export function buildAlert({ logs, collectionFailures, projectName }) {
     `错误日志：${logs.length} 条，错误签名：${groups.length} 个`,
     "",
   ];
+
+  if (forceTest) {
+    lines.push("这是一封手动触发的测试邮件，用于确认 GitHub Actions 和 QQ SMTP 通道可用。", "");
+  }
 
   if (groups.length > 0) {
     lines.push("错误摘要：");
@@ -278,6 +283,7 @@ async function main() {
     logs,
     collectionFailures,
     projectName: process.env.VERCEL_PROJECT_NAME?.trim() || "prompt-lens",
+    forceTest: argumentValue("--test-email") === "true",
   });
 
   if (!alert) {
