@@ -119,6 +119,15 @@ jobs:
             2> "$RUNNER_TEMP/vercel-server-errors.stderr"
           server_errors_status=$?
 
+          if [ "$errors_status" -ne 0 ]; then
+            printf 'Runtime log query failed with exit code %s:\n' "$errors_status" >&2
+            head -c 2000 "$RUNNER_TEMP/vercel-errors.stderr" >&2
+          fi
+          if [ "$server_errors_status" -ne 0 ]; then
+            printf 'Request log query failed with exit code %s:\n' "$server_errors_status" >&2
+            head -c 2000 "$RUNNER_TEMP/vercel-server-errors.stderr" >&2
+          fi
+
           printf 'errors_status=%s\nserver_errors_status=%s\n' \
             "$errors_status" "$server_errors_status" >> "$GITHUB_OUTPUT"
 

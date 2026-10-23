@@ -17,6 +17,7 @@
 4. 没有可操作错误时不发邮件；发现错误或日志查询失败时，通过通用 SMTP 发邮件。
 5. 工作流权限限制为 `contents: read`，不得修改代码、提交、推送或部署。
 6. Vercel Token、SMTP 授权码和收件地址保存在 GitHub Actions Secrets 中。
+7. 查询失败时在 GitHub Actions 日志中输出受限长度的 CLI stderr，便于区分参数、权限和平台能力错误；运行时业务日志仍只进入邮件摘要。
 
 ## 备选方案
 
