@@ -1,0 +1,138 @@
+name: Monitor Vercel production errors
+
+on:
+  schedule:
+    # 12:00 and 18:00 Asia/Shanghai (UTC+8)
+    - cron: "0 4 * * *"
+    - cron: "0 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vercel-production-log-monitor
+  cancel-in-progress: false
+
+env:
+  VERCEL_PROJECT_NAME: prompt-lens
+  VERCEL_PROJECT_ID: prj_LA38e0saqqVw1OkQ95AyoMx5vjIV
+  VERCEL_SCOPE: raojiacuis-projects
+  VERCEL_CLI_VERSION: 65.2.0
+  NODEMAILER_VERSION: 8.0.4
+
+jobs:
+  monitor:
+    name: Check production logs and send email
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out the monitored revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Install pinned monitoring tools
+        shell: bash
+        run: >-
+          npm install
+          --prefix "$RUNNER_TEMP/vercel-monitor"
+          --ignore-scripts
+          --no-audit
+          --no-fund
+          "vercel@$VERCEL_CLI_VERSION"
+          "nodemailer@$NODEMAILER_VERSION"
+
+      - name: Calculate the non-overlapping log window
+        id: window
+        shell: bash
+        env:
+          SCHEDULE_EXPRESSION: ${{ github.event.schedule }}
+        run: |
+          set -euo pipefail
+
+          case "$SCHEDULE_EXPRESSION" in
+            "0 4 * * *")
+              since="$(date -u -d 'yesterday' '+%Y-%m-%dT10:00:00Z')"
+              until="$(date -u '+%Y-%m-%dT04:00:00Z')"
+              ;;
+            "0 10 * * *")
+              since="$(date -u '+%Y-%m-%dT04:00:00Z')"
+              until="$(date -u '+%Y-%m-%dT10:00:00Z')"
+              ;;
+            *)
+              since="$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
+              until="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+              ;;
+          esac
+
+          printf 'since=%s\nuntil=%s\n' "$since" "$until" >> "$GITHUB_OUTPUT"
+
+      - name: Collect production errors
+        id: collect
+        shell: bash
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          SINCE: ${{ steps.window.outputs.since }}
+          UNTIL: ${{ steps.window.outputs.until }}
+        run: |
+          set +e
+          vercel_cli="$RUNNER_TEMP/vercel-monitor/node_modules/.bin/vercel"
+
+          "$vercel_cli" logs \
+            --project "$VERCEL_PROJECT_ID" \
+            --scope "$VERCEL_SCOPE" \
+            --environment production \
+            --branch main \
+            --level error \
+            --level fatal \
+            --since "$SINCE" \
+            --until "$UNTIL" \
+            --limit 1000 \
+            --json \
+            > "$RUNNER_TEMP/vercel-errors.jsonl" \
+            2> "$RUNNER_TEMP/vercel-errors.stderr"
+          errors_status=$?
+
+          "$vercel_cli" logs \
+            --project "$VERCEL_PROJECT_ID" \
+            --scope "$VERCEL_SCOPE" \
+            --environment production \
+            --branch main \
+            --status-code 5xx \
+            --since "$SINCE" \
+            --until "$UNTIL" \
+            --limit 1000 \
+            --json \
+            > "$RUNNER_TEMP/vercel-server-errors.jsonl" \
+            2> "$RUNNER_TEMP/vercel-server-errors.stderr"
+          server_errors_status=$?
+
+          printf 'errors_status=%s\nserver_errors_status=%s\n' \
+            "$errors_status" "$server_errors_status" >> "$GITHUB_OUTPUT"
+
+      - name: Email actionable findings
+        shell: bash
+        env:
+          MONITOR_NODE_MODULES: ${{ runner.temp }}/vercel-monitor
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_SECURE: ${{ secrets.SMTP_SECURE }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          ALERT_EMAIL_FROM: ${{ secrets.ALERT_EMAIL_FROM }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+        run: |
+          node scripts/vercel-log-report.mjs \
+            --errors "$RUNNER_TEMP/vercel-errors.jsonl" \
+            --errors-stderr "$RUNNER_TEMP/vercel-errors.stderr" \
+            --errors-status "${{ steps.collect.outputs.errors_status }}" \
+            --server-errors "$RUNNER_TEMP/vercel-server-errors.jsonl" \
+            --server-errors-stderr "$RUNNER_TEMP/vercel-server-errors.stderr" \
+            --server-errors-status "${{ steps.collect.outputs.server_errors_status }}"
