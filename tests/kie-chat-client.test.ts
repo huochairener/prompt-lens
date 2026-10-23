@@ -51,6 +51,43 @@ describe("KIE chat client", () => {
     expect(delay).toHaveBeenCalledTimes(1);
   });
 
+  it("retries one transport timeout and then returns the streamed result", async () => {
+    const timeout = new Error("The operation was aborted due to timeout");
+    timeout.name = "TimeoutError";
+    const fetcher = vi
+      .fn()
+      .mockRejectedValueOnce(timeout)
+      .mockResolvedValueOnce(streamResponse("recovered after timeout"));
+    const delay = vi.fn(async () => undefined);
+
+    await expect(requestKieChatCompletion({
+      url: "https://api.kie.ai/example",
+      apiKey: "test-key",
+      payload: { model: "gemini-3-8-flash", messages: [] },
+      fetcher,
+      delay,
+    })).resolves.toBe("recovered after timeout");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(delay).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a stable KIE timeout after both attempts time out", async () => {
+    const timeout = new Error("The operation was aborted due to timeout");
+    timeout.name = "TimeoutError";
+    const fetcher = vi.fn(async () => {
+      throw timeout;
+    });
+
+    await expect(requestKieChatCompletion({
+      url: "https://api.kie.ai/example",
+      apiKey: "test-key",
+      payload: { model: "gemini-3-8-flash", messages: [] },
+      fetcher,
+      delay: async () => undefined,
+    })).rejects.toThrow("KIE request timed out after 2 attempts");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it("does not retry non-transient KIE business errors", async () => {
     const fetcher = vi.fn(async () => jsonResponse({ code: 402, msg: "Insufficient credits" }));
 

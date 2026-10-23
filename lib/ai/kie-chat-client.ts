@@ -27,6 +27,11 @@ function wait(milliseconds: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function isTransportTimeout(error: unknown): error is Error {
+  return error instanceof Error
+    && (error.name === "TimeoutError" || error.name === "AbortError");
+}
+
 function parseJson(body: string): unknown {
   try {
     return JSON.parse(body);
@@ -86,14 +91,22 @@ export async function requestKieChatCompletion(
       return await requestOnce(options, timeoutMs);
     } catch (error) {
       const retryBudgetMs = REQUEST_DEADLINE_MS - (Date.now() - startedAt);
+      const transportTimeout = isTransportTimeout(error);
       const canRetry = attempt === 0
-        && isKieGatewayTimeout(error)
+        && (isKieGatewayTimeout(error) || transportTimeout)
         && retryBudgetMs >= MINIMUM_RETRY_BUDGET_MS;
 
-      if (!canRetry) throw error;
+      if (!canRetry) {
+        if (transportTimeout) {
+          throw new Error(`KIE request timed out after ${attempt + 1} attempts`, {
+            cause: error,
+          });
+        }
+        throw error;
+      }
 
-      console.warn("[KIE Gemini] Gateway timeout; retrying once", {
-        code: error.code,
+      console.warn("[KIE Gemini] Transient timeout; retrying once", {
+        kind: isKieGatewayTimeout(error) ? "gateway-524" : "transport-timeout",
         model: typeof options.payload.model === "string" ? options.payload.model : undefined,
       });
       await delay(RETRY_DELAY_MS);
