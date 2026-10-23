@@ -1,5 +1,15 @@
 type JsonRecord = Record<string, unknown>;
 
+export class KieApiError extends Error {
+  constructor(
+    public readonly code: string | number | undefined,
+    detail: string,
+  ) {
+    super(code === undefined ? `KIE API error: ${detail}` : `KIE API error (${String(code)}): ${detail}`);
+    this.name = "KieApiError";
+  }
+}
+
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -10,8 +20,11 @@ function compactMessage(value: unknown): string | null {
   return message ? message.slice(0, 240) : null;
 }
 
-function readText(value: unknown): string | null {
-  if (typeof value === "string") return value.trim() || null;
+function readText(value: unknown, preserveWhitespace = false): string | null {
+  if (typeof value === "string") {
+    if (!value.trim()) return null;
+    return preserveWhitespace ? value : value.trim();
+  }
   if (!Array.isArray(value)) return null;
 
   const text = value
@@ -20,10 +33,10 @@ function readText(value: unknown): string | null {
       if (!isRecord(part)) return "";
       return typeof part.text === "string" ? part.text : "";
     })
-    .join("")
-    .trim();
+    .join("");
 
-  return text || null;
+  if (!text.trim()) return null;
+  return preserveWhitespace ? text : text.trim();
 }
 
 function responseBody(data: unknown): JsonRecord | null {
@@ -32,38 +45,22 @@ function responseBody(data: unknown): JsonRecord | null {
   return isRecord(data.data) ? data.data : data;
 }
 
-export function summarizeKieChatResponse(data: unknown) {
-  const root = isRecord(data) ? data : null;
-  const body = responseBody(data);
-  const choices = body && Array.isArray(body.choices) ? body.choices : [];
-  const choice = isRecord(choices[0]) ? choices[0] : null;
-  const message = choice && isRecord(choice.message) ? choice.message : null;
-  const candidates = body && Array.isArray(body.candidates) ? body.candidates : [];
-  const candidate = isRecord(candidates[0]) ? candidates[0] : null;
-
-  return {
-    responseType: Array.isArray(data) ? "array" : typeof data,
-    code: root?.code ?? null,
-    message: compactMessage(root?.msg) || compactMessage(root?.message),
-    choiceCount: choices.length,
-    candidateCount: candidates.length,
-    finishReason: choice?.finish_reason ?? candidate?.finishReason ?? null,
-    contentType: message ? (Array.isArray(message.content) ? "array" : typeof message.content) : null,
-  };
-}
-
-export function parseKieChatResponse(data: unknown): string {
+function throwForKieError(data: unknown) {
   const root = isRecord(data) ? data : null;
   const code = root?.code;
   const upstreamMessage = compactMessage(root?.msg) || compactMessage(root?.message);
 
   if (code !== undefined && code !== 200 && code !== "200") {
-    throw new Error(`KIE API error (${String(code)}): ${upstreamMessage || "request failed"}`);
+    throw new KieApiError(code as string | number, upstreamMessage || "request failed");
   }
 
   const rootError = root && isRecord(root.error) ? root.error : null;
   const errorMessage = compactMessage(rootError?.message) || compactMessage(root?.error);
-  if (errorMessage) throw new Error(`KIE API error: ${errorMessage}`);
+  if (errorMessage) throw new KieApiError(undefined, errorMessage);
+}
+
+export function parseKieChatResponse(data: unknown): string {
+  throwForKieError(data);
 
   const body = responseBody(data);
   const choices = body && Array.isArray(body.choices) ? body.choices : [];
@@ -81,4 +78,58 @@ export function parseKieChatResponse(data: unknown): string {
   const finishReason = choice?.finish_reason ?? candidate?.finishReason;
   const reason = finishReason ? ` (finish_reason: ${String(finishReason)})` : "";
   throw new Error(`KIE Gemini returned no text${reason}`);
+}
+
+function readStreamChunk(data: unknown): string | null {
+  throwForKieError(data);
+
+  const body = responseBody(data);
+  const choices = body && Array.isArray(body.choices) ? body.choices : [];
+  const choice = isRecord(choices[0]) ? choices[0] : null;
+  const delta = choice && isRecord(choice.delta) ? choice.delta : null;
+  const message = choice && isRecord(choice.message) ? choice.message : null;
+  const openAiContent = readText(delta?.content ?? message?.content, true);
+  if (openAiContent) return openAiContent;
+
+  const candidates = body && Array.isArray(body.candidates) ? body.candidates : [];
+  const candidate = isRecord(candidates[0]) ? candidates[0] : null;
+  const candidateContent = candidate && isRecord(candidate.content) ? candidate.content : null;
+  return readText(candidateContent?.parts, true);
+}
+
+export function parseKieChatEventStream(stream: string): string {
+  let output = "";
+  let dataLines: string[] = [];
+
+  const flushEvent = () => {
+    if (dataLines.length === 0) return;
+    const payload = dataLines.join("\n");
+    dataLines = [];
+    if (payload === "[DONE]") return;
+
+    let data: unknown;
+    try {
+      data = JSON.parse(payload);
+    } catch {
+      throw new Error("KIE Gemini stream returned invalid JSON");
+    }
+
+    output += readStreamChunk(data) || "";
+  };
+
+  for (const line of stream.split(/\r?\n/)) {
+    if (line === "") {
+      flushEvent();
+      continue;
+    }
+    if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+  }
+  flushEvent();
+
+  if (!output.trim()) throw new Error("KIE Gemini stream returned no text");
+  return output.trim();
+}
+
+export function isKieGatewayTimeout(error: unknown): error is KieApiError {
+  return error instanceof KieApiError && Number(error.code) === 524;
 }

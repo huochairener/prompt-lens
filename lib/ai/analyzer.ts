@@ -5,7 +5,7 @@ import { eq, and, desc } from "drizzle-orm";
 import { decodeAnalyzeApiKey } from "@/lib/usage/trial-quota";
 import { ANALYSIS_PROMPTS, extractCorePrompt } from "@/lib/ai/prompts";
 import { describeAnalysisProviderError } from "@/lib/ai/provider-error";
-import { parseKieChatResponse, summarizeKieChatResponse } from "@/lib/ai/kie-chat-response";
+import { requestKieChatCompletion } from "@/lib/ai/kie-chat-client";
 import { getKieAnalysisPath } from "@/lib/ai/analysis-models";
 import type { Locale } from "@/i18n/config";
 import { defaultLocale } from "@/i18n/config";
@@ -24,6 +24,8 @@ if (proxyUrl) {
       port: parseInt(url.port) || (url.protocol === "https:" ? 443 : 80),
       protocol: url.protocol.replace(":", ""),
     };
+    const { setGlobalDispatcher, ProxyAgent } = require("undici");
+    setGlobalDispatcher(new ProxyAgent(proxyUrl));
     console.log("[AI] Proxy enabled (local dev only):", axiosProxy);
   } catch {
     console.warn("[AI] Failed to parse proxy URL");
@@ -218,28 +220,21 @@ async function callKieGeminiApi(
   messages: any[],
   model: string,
 ): Promise<string> {
-  const headers = {
-    Authorization: `Bearer ${apiKey}`,
-    "Content-Type": "application/json",
-  };
-
   const payload = {
     model,
     messages,
     max_tokens: 8192,
-    stream: false,
     include_thoughts: false,
   };
 
-  const url = `${KIE_BASE_URL}${getKieAnalysisPath(model)}`;
-  const response = await axios.post(url, payload, {
-    headers,
-    timeout: 180000,
-    ...(axiosProxy ? { proxy: axiosProxy } : {}),
+  const channel = getKieAnalysisPath(model);
+  const result = await requestKieChatCompletion({
+    url: `${KIE_BASE_URL}${channel}`,
+    apiKey,
+    payload,
   });
-
-  console.log("[KIE Gemini] Response:", { model, channel: getKieAnalysisPath(model), ...summarizeKieChatResponse(response.data) });
-  return parseKieChatResponse(response.data);
+  console.log("[KIE Gemini] Response received", { model, channel });
+  return result;
 }
 /**
  * 调用 OpenRouter API

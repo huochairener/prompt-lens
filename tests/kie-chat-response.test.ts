@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parseKieChatResponse, summarizeKieChatResponse } from "@/lib/ai/kie-chat-response";
+import {
+  KieApiError,
+  isKieGatewayTimeout,
+  parseKieChatEventStream,
+  parseKieChatResponse,
+} from "@/lib/ai/kie-chat-response";
 
 describe("KIE chat response", () => {
   it("reads standard OpenAI-compatible content", () => {
@@ -24,24 +29,37 @@ describe("KIE chat response", () => {
   });
 
   it("surfaces KIE business errors returned with HTTP 200", () => {
-    expect(() => parseKieChatResponse({ code: 402, msg: "Insufficient credits" }))
-      .toThrow("KIE API error (402): Insufficient credits");
+    try {
+      parseKieChatResponse({ code: 402, msg: "Insufficient credits" });
+      throw new Error("Expected KIE error");
+    } catch (error) {
+      expect(error).toBeInstanceOf(KieApiError);
+      expect(error).toMatchObject({ code: 402 });
+      expect((error as Error).message).toBe("KIE API error (402): Insufficient credits");
+    }
   });
 
-  it("keeps empty-response logs diagnostic but content-free", () => {
-    const response = {
-      choices: [{ message: { content: "secret model output" }, finish_reason: "length" }],
-    };
+  it("combines OpenAI-compatible SSE chunks without losing whitespace", () => {
+    const stream = [
+      'data: {"choices":[{"delta":{"content":"analysis"}}]}',
+      "",
+      'data: {"choices":[{"delta":{"content":" result"}}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
 
-    expect(summarizeKieChatResponse(response)).toEqual({
-      responseType: "object",
-      code: null,
-      message: null,
-      choiceCount: 1,
-      candidateCount: 0,
-      finishReason: "length",
-      contentType: "string",
-    });
-    expect(JSON.stringify(summarizeKieChatResponse(response))).not.toContain("secret model output");
+    expect(parseKieChatEventStream(stream)).toBe("analysis result");
+  });
+
+  it("recognizes a streamed 524 as a retryable gateway timeout", () => {
+    expect(() => parseKieChatEventStream('data: {"code":524,"msg":"2 times retry fail"}\n\n'))
+      .toThrow("KIE API error (524): 2 times retry fail");
+
+    try {
+      parseKieChatEventStream('data: {"code":524,"msg":"2 times retry fail"}\n\n');
+    } catch (error) {
+      expect(isKieGatewayTimeout(error)).toBe(true);
+    }
   });
 });
