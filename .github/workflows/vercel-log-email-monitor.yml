@@ -2,8 +2,8 @@ name: Monitor Vercel production errors
 
 on:
   schedule:
-    # Seven minutes after each UTC hour avoids peak scheduler load.
-    - cron: "7 * * * *"
+    # Seven minutes after each UTC half-hour avoids peak scheduler load.
+    - cron: "7,37 * * * *"
   workflow_dispatch:
     inputs:
       send_test_email:
@@ -59,7 +59,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          printf 'since=1h\nuntil=now\n' >> "$GITHUB_OUTPUT"
+          printf 'since=30m\nuntil=now\n' >> "$GITHUB_OUTPUT"
 
       - name: Collect production errors
         id: collect
