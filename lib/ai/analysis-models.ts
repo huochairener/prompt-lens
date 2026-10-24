@@ -1,3 +1,5 @@
+import { getProviderModelPath } from "@/lib/ai/providers/config";
+
 export const ANALYSIS_MODELS = [
   {
     id: "platform-gemini-3.8-flash",
@@ -31,11 +33,11 @@ export type AnalysisModelId = AnalysisModel["id"];
 export const DEFAULT_ANALYSIS_MODEL_ID: AnalysisModelId = "platform-gemini-3.8-flash";
 
 // KIE channel paths are not interchangeable with request model names.
+// 路径本身配置在 config/ai-providers.json 的 provider.modelPaths 中。
 export function getKieAnalysisPath(model: string): string {
-  if (model === "gemini-3-8-flash") return "/gemini-3-8-flash-openai/v1/chat/completions";
-  if (model === "gemini-3-5-flash-thinking") return "/gemini-3-5-flash-openai/v1/chat/completions";
-  if (model === "gemini-2.5-pro") return "/gemini-2.5-pro/v1/chat/completions";
-  throw new Error(`Unsupported KIE analysis model: ${model}`);
+  const path = getProviderModelPath("kie", model);
+  if (!path) throw new Error(`Unsupported KIE analysis model: ${model}`);
+  return path;
 }
 
 export function resolveAnalysisModel(modelId: unknown): AnalysisModel | null {

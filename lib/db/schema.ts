@@ -84,13 +84,8 @@ export const verification = pgTable("verification", {
 });
 
 // ============ 新增：用户 API Key 存储 ============
-export const apiProviderEnum = pgEnum("api_provider", [
-  "zhipu",   // 智谱AI
-  "gemini",  // Google Gemini
-  "openrouter", // OpenRouter
-  "kie",     // Kie.ai 视频生成
-]);
-
+// provider 曾经是 pg enum（只允许 zhipu/gemini/openrouter/kie），
+// 在线新增的提供商无法写入，因此改为文本列，由 config/ai-providers.json 决定取值范围。
 export const userApiKeys = pgTable(
   "user_api_keys",
   {
@@ -98,7 +93,7 @@ export const userApiKeys = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
-    provider: apiProviderEnum("provider").notNull(),
+    provider: varchar("provider", { length: 64 }).notNull(),
     apiKey: text("api_key").notNull(),
     isActive: boolean("is_active").default(true).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -303,7 +298,29 @@ export const videoGeneration = pgTable(
   }
 );
 
+// ============ 新增：AI 提供商在线配置（单行表） ============
+// 存放"不重启就生效"的运行时配置：当前提供商、覆盖项、加密后的平台 Key。
+// 与 config/ai-providers.json 的关系：文件是基线，这张表是覆盖层。
+export const aiSettings = pgTable("ai_settings", {
+  /** 固定为 global，保证只有一行 */
+  id: varchar("id", { length: 32 }).primaryKey(),
+  /** 当前生效的提供商 id，null 表示回退到环境变量/文件默认值 */
+  activeProviderId: varchar("active_provider_id", { length: 64 }),
+  /** ProviderOverride[]，按 id 覆盖文件里的提供商或新增提供商 */
+  overrides: jsonb("overrides").default([]).notNull(),
+  /** Record<providerId, { cipher, hint, updatedAt }>，平台 Key 的密文 */
+  secrets: jsonb("secrets").default({}).notNull(),
+  updatedBy: uuid("updated_by").references(() => user.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .notNull()
+    .$onUpdate(() => new Date()),
+});
+
 // ============ 类型导出 ============
+export type AiSettings = typeof aiSettings.$inferSelect;
+export type NewAiSettings = typeof aiSettings.$inferInsert;
 export type User = typeof user.$inferSelect;
 export type NewUser = typeof user.$inferInsert;
 export type UserApiKey = typeof userApiKeys.$inferSelect;

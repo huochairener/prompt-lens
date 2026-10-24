@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -48,13 +48,29 @@ export function AudioAnalyzeTab({ activeTab }: AudioAnalyzeTabProps) {
   const [clipLoading, setClipLoading] = useState(false);
   const [clipUrl, setClipUrl] = useState<string | null>(null);
   const [whisperModel, setWhisperModel] = useState("assemblyai");
-  const [llmProvider, setLlmProvider] = useState("deepseek");
+  // 空值表示跟随运行时当前提供商
+  const [llmProvider, setLlmProvider] = useState("");
+  const [providers, setProviders] = useState<Array<{ id: string; label: string }>>([]);
   const [customPrompt, setCustomPrompt] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const [inputMode, setInputMode] = useState<"file" | "url">("file");
   const [videoUrlInput, setVideoUrlInput] = useState("");
   const [funasrUrl, setFunasrUrl] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 提供商列表来自 config/ai-providers.json
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/settings/ai-provider", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data) setProviders(data.providers ?? []);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -336,8 +352,10 @@ export function AudioAnalyzeTab({ activeTab }: AudioAnalyzeTabProps) {
                   onChange={(e) => setLlmProvider(e.target.value)}
                   className="w-full h-10 px-3 border border-[#C8C4BC] rounded-lg focus:border-[#D97757] outline-none bg-white text-[#141413]"
                 >
-                  <option value="deepseek">{t("llmDeepseek")}</option>
-                  <option value="zhipu">{t("llmZhipu")}</option>
+                  <option value="">{t("llmFollowActive")}</option>
+                  {providers.map((provider) => (
+                    <option key={provider.id} value={provider.id}>{provider.label}</option>
+                  ))}
                 </select>
               </div>
             </div>

@@ -1,10 +1,8 @@
-import axios from "axios";
-import { db } from "@/lib/db";
-import { userApiKeys } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
-import { decryptApiKey, isValidEncryptedKey } from "@/lib/utils/encryption";
+import { createChatCompletion } from "@/lib/ai/providers/client";
+import { getProviderConfig } from "@/lib/ai/providers/config";
+import { resolveProviderApiKey } from "@/lib/ai/providers/resolve-key";
+import { resolveActiveProviderId } from "@/lib/ai/providers/runtime";
 import { getDefaultWhisperModel, WhisperModelSize } from "./index";
-import path from "path";
 
 // ============ 类型定义 ============
 
@@ -31,28 +29,10 @@ export interface LLMResult {
   segments: VideoSegment[];
 }
 
-// ============ API 配置 ============
+// ============ LLM 提供商 ============
 
-const LLM_API_CONFIGS = {
-  zhipu: {
-    url: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-    model: "glm-4-flash",
-  },
-  gemini: {
-    url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent",
-    model: "gemini-2.0-flash-exp",
-  },
-  openrouter: {
-    url: "https://openrouter.ai/api/v1/chat/completions",
-    model: "google/gemini-2.0-flash-exp",
-  },
-  deepseek: {
-    url: "https://api.deepseek.com/v1/chat/completions",
-    model: "deepseek-chat",
-  },
-};
-
-export type LLMProvider = "zhipu" | "gemini" | "openrouter" | "deepseek";
+/** 提供商 id，取值见 config/ai-providers.json */
+export type LLMProvider = string;
 
 // ============ Whisper 语音识别 ============
 
@@ -134,106 +114,15 @@ function createFormData(base64Audio: string, mimeType: string): FormData {
 // ============ LLM 智能分段 ============
 
 /**
- * 获取用户的 API Key
- */
-async function getUserApiKey(userId: string, provider: LLMProvider): Promise<string | null> {
-  // 如果使用 deepseek，从环境变量获取
-  if (provider === "deepseek") {
-    return process.env.DEEPSEEK_API_KEY || null;
-  }
-
-  const result = await db.query.userApiKeys.findFirst({
-    where: eq(userApiKeys.userId, userId),
-  });
-
-  if (!result || !result.isActive) {
-    return null;
-  }
-
-  // 解密 API Key（支持加密和未加密的旧数据）
-  try {
-    if (isValidEncryptedKey(result.apiKey)) {
-      return decryptApiKey(result.apiKey);
-    }
-    // 兼容旧数据：未加密的明文
-    return result.apiKey;
-  } catch (error) {
-    console.error(`[LLM] Failed to decrypt API key for ${provider}:`, error);
-    return null;
-  }
-}
-
-/**
- * 调用智谱AI API
- */
-async function callZhipuApi(apiKey: string, messages: any[]): Promise<string> {
-  const response = await axios.post(
-    LLM_API_CONFIGS.zhipu.url,
-    {
-      model: LLM_API_CONFIGS.zhipu.model,
-      messages: messages,
-      max_tokens: 4096,
-      temperature: 0.3,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 120,
-    }
-  );
-
-  if (!response.data.choices || response.data.choices.length === 0) {
-    throw new Error("API returned empty result");
-  }
-
-  return response.data.choices[0].message.content;
-}
-
-/**
- * 调用 DeepSeek API
- */
-async function callDeepSeekApi(apiKey: string, messages: any[]): Promise<string> {
-  const response = await axios.post(
-    LLM_API_CONFIGS.deepseek.url,
-    {
-      model: LLM_API_CONFIGS.deepseek.model,
-      messages: messages,
-      max_tokens: 4096,
-      temperature: 0.3,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 120,
-    }
-  );
-
-  if (!response.data.choices || response.data.choices.length === 0) {
-    throw new Error("API returned empty result");
-  }
-
-  return response.data.choices[0].message.content;
-}
-
-/**
  * 调用 LLM 进行智能分段
  */
 export async function segmentWithLLM(
   userId: string,
   transcription: TranscriptionSegment[],
-  provider: LLMProvider = "deepseek",
+  provider?: LLMProvider,
   customPrompt?: string
 ): Promise<LLMResult> {
-  const apiKey = await getUserApiKey(userId, provider);
-
-  if (!apiKey) {
-    // 如果没有 API Key，返回默认分段（按句子分段）
-    return segmentBySentences(transcription);
-  }
+  const providerId = provider?.trim() || (await resolveActiveProviderId());
 
   // 构建系统提示
   const systemPrompt = `你是一个专业的视频剪辑助手，需要根据提供的字幕内容将视频处理成有意义的片段。
@@ -254,23 +143,26 @@ export async function segmentWithLLM(
 \n\n字幕内容：\n${subtitlesContent}`;
 
   try {
-    let result: string;
+    const providerConfig = getProviderConfig(providerId);
+    const apiKey = await resolveProviderApiKey(providerConfig, { userId });
 
-    if (provider === "deepseek") {
-      result = await callDeepSeekApi(apiKey, [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ]);
-    } else {
-      result = await callZhipuApi(apiKey, [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ]);
+    // 没有可用 Key 时退回按句子分段
+    if (!apiKey) {
+      return segmentBySentences(transcription);
     }
 
-    // 解析 JSON 结果
-    const segments = parseLLMResponse(result);
-    return { segments };
+    const completion = await createChatCompletion({
+      provider: providerId,
+      apiKey,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      maxOutputTokens: providerConfig.maxOutputTokens,
+      temperature: providerConfig.temperature ?? 0.3,
+    });
+
+    return { segments: parseLLMResponse(completion.text) };
   } catch (error) {
     console.error("LLM segmentation error:", error);
     // 出错时使用默认分段

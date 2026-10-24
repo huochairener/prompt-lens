@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { HistoryList } from "@/components/history-list";
 import { ApiKeySettings } from "@/components/api-key-settings";
+import { AiProviderSettings } from "@/components/ai-provider-settings";
 import { AudioAnalyzeTab } from "@/components/audio-analyze-tab";
 import { VideoEditTab } from "@/components/video-edit-tab";
 import { VideoGenerateTab } from "@/components/video-generate-tab";
@@ -458,7 +459,8 @@ export default function DashboardPage() {
 
         {/* 设置页面 */}
         {activeTab === "settings" && (
-          <div className="animate-fade-in">
+          <div className="animate-fade-in space-y-6">
+            <AiProviderSettings />
             <ApiKeySettings />
           </div>
         )}

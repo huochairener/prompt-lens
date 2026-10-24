@@ -1,153 +1,49 @@
-import axios from "axios";
-import { db } from "@/lib/db";
-import { userApiKeys } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
-import { decryptApiKey, isValidEncryptedKey } from "@/lib/utils/encryption";
+import { createChatCompletion } from "@/lib/ai/providers/client";
+import { getProviderConfig } from "@/lib/ai/providers/config";
+import { ProviderApiKeyError } from "@/lib/ai/providers/errors";
+import { resolveProviderApiKey } from "@/lib/ai/providers/resolve-key";
+import { resolveActiveProviderId } from "@/lib/ai/providers/runtime";
+import type { ChatMessage, ChatRole } from "@/lib/ai/providers/types";
 
-// 代理配置
-const isLocalDev = process.env.NODE_ENV === "development";
-const proxyUrl = isLocalDev ? (process.env.HTTPS_PROXY || process.env.HTTP_PROXY || "http://127.0.0.1:7897") : undefined;
-
-let axiosProxy: { host: string; port: number; protocol: string } | undefined = undefined;
-if (proxyUrl) {
-  try {
-    const url = new URL(proxyUrl);
-    axiosProxy = {
-      host: url.hostname,
-      port: parseInt(url.port) || (url.protocol === "https:" ? 443 : 80),
-      protocol: url.protocol.replace(":", ""),
-    };
-  } catch {
-    console.warn("[Chat] Failed to parse proxy URL");
-  }
-}
-
-// API 配置
-const API_CONFIGS = {
-  deepseek: {
-    url: "https://api.deepseek.com/v1/chat/completions",
-    model: "deepseek-chat",
-  },
-  zhipu: {
-    url: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-    model: "glm-4",
-  },
-  openrouter: {
-    url: "https://openrouter.ai/api/v1/chat/completions",
-    model: "anthropic/claude-3-haiku",
-  },
-};
-
-// 环境变量中的 API Keys
-const ENV_API_KEYS = {
-  deepseek: process.env.DEEPSEEK_API_KEY || null,
-  zhipu: process.env.ZHIPU_API_KEY || null,
-  openrouter: process.env.OPENROUTER_API_KEY || null,
-};
-
-export type ChatProvider = "deepseek" | "zhipu" | "openrouter";
+/** 提供商 id，取值见 config/ai-providers.json */
+export type ChatProvider = string;
 
 interface ChatOptions {
   userId: string;
-  provider: ChatProvider;
+  provider?: ChatProvider;
   messages: Array<{ role: string; content: string }>;
 }
 
-/**
- * 获取 API Key
- * 注意：deepseek 只支持环境变量，不存储在数据库
- */
-async function getApiKey(userId: string, provider: ChatProvider): Promise<string | null> {
-  // 1. 优先检查环境变量
-  const envKey = ENV_API_KEYS[provider];
-  if (envKey) {
-    console.log(`[Chat] Using env API key for ${provider}`);
-    return envKey;
-  }
-
-  // 2. deepseek 不支持数据库存储，直接返回
-  if (provider === "deepseek") {
-    return null;
-  }
-
-  // 3. 从数据库读取用户配置的 API Key (仅支持 zhipu/gemini/openrouter)
-  const result = await db.query.userApiKeys.findFirst({
-    where: and(
-      eq(userApiKeys.userId, userId),
-      eq(userApiKeys.provider, provider as "zhipu" | "gemini" | "openrouter")
-    ),
-  });
-
-  if (!result || !result.isActive) {
-    return null;
-  }
-
-  try {
-    if (isValidEncryptedKey(result.apiKey)) {
-      return decryptApiKey(result.apiKey);
-    }
-    return result.apiKey;
-  } catch (error) {
-    console.error(`[Chat] Failed to decrypt API key for ${provider}:`, error);
-    return null;
-  }
+function normalizeRole(role: string): ChatRole {
+  if (role === "system" || role === "assistant") return role;
+  return "user";
 }
 
 /**
- * 调用 AI 提供商
+ * 调用当前（或指定）AI 提供商。
+ * base URL / 协议 / 模型全部来自 config/ai-providers.json，不再写死在代码里。
  */
 export async function callAIProvider(options: ChatOptions): Promise<string> {
-  const { userId, provider, messages } = options;
+  const providerId = options.provider?.trim() || (await resolveActiveProviderId());
+  const provider = getProviderConfig(providerId);
 
-  const apiKey = await getApiKey(userId, provider);
+  const apiKey = await resolveProviderApiKey(provider, { userId: options.userId });
   if (!apiKey) {
-    const envConfigured = ENV_API_KEYS[provider] ? ` (env: ${provider})` : "";
-    throw new Error(`No API key configured for ${provider}${envConfigured}. Please set API key in settings.`);
+    throw new ProviderApiKeyError(provider.id, provider.label, provider.apiKeyEnv);
   }
 
-  const config = API_CONFIGS[provider];
-
-  // 转换消息格式
-  const formattedMessages = messages.map((msg) => ({
-    role: msg.role === "assistant" ? "assistant" : msg.role === "user" ? "user" : "user",
-    content: msg.content,
+  const messages: ChatMessage[] = options.messages.map((message) => ({
+    role: normalizeRole(message.role),
+    content: message.content ?? "",
   }));
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-
-  if (provider === "openrouter") {
-    headers["HTTP-Referer"] = "https://prompt-lens.cc.cd";
-    headers["X-Title"] = "Prompt Lens";
-  }
-
-  if (provider !== "zhipu") {
-    headers["Authorization"] = `Bearer ${apiKey}`;
-  }
-
-  const payload = {
-    model: config.model,
-    messages: formattedMessages,
-    max_tokens: 4096,
-    temperature: 0.7,
-  };
-
-  if (provider === "zhipu") {
-    (payload as any).secret_key = apiKey;
-  }
-
-  console.log(`[Chat] Calling ${provider}:`, { url: config.url, model: config.model });
-
-  const response = await axios.post(config.url, payload, {
-    headers,
-    timeout: 120000,
-    ...(axiosProxy ? { proxy: axiosProxy } : {}),
+  const result = await createChatCompletion({
+    provider: providerId,
+    apiKey,
+    messages,
+    maxOutputTokens: provider.maxOutputTokens,
+    temperature: provider.temperature,
   });
 
-  if (!response.data.choices || response.data.choices.length === 0) {
-    throw new Error("API returned empty result");
-  }
-
-  return response.data.choices[0].message.content;
+  return result.text;
 }

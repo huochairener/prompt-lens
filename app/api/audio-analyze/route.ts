@@ -5,6 +5,9 @@ import { checkRateLimit, RateLimitConfigs } from "@/lib/utils/rate-limit";
 import { AssemblyAI } from "assemblyai";
 import axios from "axios";
 import { extractR2Key, getSignedUrlFromR2 } from "@/lib/cloudflare/r2";
+import { createChatCompletion } from "@/lib/ai/providers/client";
+import { resolveActiveProviderId, getProviderConfig, getServiceBaseUrl } from "@/lib/ai/providers";
+import { resolveProviderApiKey } from "@/lib/ai/providers/resolve-key";
 
 // 将公开 R2 URL 转为签名 URL，否则原样返回
 async function ensureAccessibleUrl(url: string): Promise<string> {
@@ -29,15 +32,15 @@ function getAssemblyClient() {
   }
   return new AssemblyAI({
     apiKey,
-    baseUrl: "https://api.assemblyai.com",
+    baseUrl: getServiceBaseUrl("assemblyai"),
   });
 }
 
-// LLM 分段函数
+// LLM 分段函数（提供商、base URL、协议均来自 config/ai-providers.json）
 async function segmentWithLLM(
   transcription: string,
-  llmProvider: string,
-  apiKey: string
+  llmProvider: string | undefined,
+  userId: string
 ): Promise<any[]> {
   const systemPrompt = `你是一个视频内容分析专家。用户提供语音转文字的字幕内容，你需要：
 1. 将内容分成多个逻辑片段，每个片段代表一个独立的场景或话题
@@ -58,47 +61,30 @@ async function segmentWithLLM(
   const userPrompt = `字幕内容：\n${transcription}`;
 
   try {
-    // 使用 OpenRouter 或 Deepseek
-    if (llmProvider === "deepseek" || llmProvider === "openrouter") {
-      const baseUrl = llmProvider === "deepseek"
-        ? "https://api.deepseek.com/v1"
-        : "https://openrouter.ai/api/v1";
-      const model = llmProvider === "deepseek" ? "deepseek-chat" : "anthropic/claude-3-haiku";
+    const providerId = llmProvider?.trim() || (await resolveActiveProviderId());
+    const provider = getProviderConfig(providerId);
+    const apiKey = await resolveProviderApiKey(provider, { userId });
+    if (!apiKey) return [];
 
-      const response = await axios.post(
-        `${baseUrl}/chat/completions`,
-        {
-          model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          temperature: 0.3,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          timeout: 60000,
-        }
-      );
+    const completion = await createChatCompletion({
+      provider: providerId,
+      apiKey,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0.3,
+    });
 
-      const content = response.data.choices[0]?.message?.content || "[]";
-      // 提取 JSON 部分
-      const jsonMatch = content.match(/\[[\s\S]*\]/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        // 确保 tags 是数组
-        return parsed.map((item: any) => ({
-          ...item,
-          tags: typeof item.tags === 'string' ? item.tags.split(',').map((t: string) => t.trim()) : item.tags || []
-        }));
-      }
-    }
+    // 提取 JSON 部分
+    const jsonMatch = completion.text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) return [];
 
-    // 默认返回空数组
-    return [];
+    const parsed = JSON.parse(jsonMatch[0]) as Array<Record<string, any>>;
+    return parsed.map((item) => ({
+      ...item,
+      tags: typeof item.tags === "string" ? item.tags.split(",").map((t: string) => t.trim()) : item.tags || [],
+    }));
   } catch (error) {
     console.error("LLM segmentation error:", error);
     return [];
@@ -142,7 +128,7 @@ export async function POST(request: NextRequest) {
     const {
       mediaUrl,
       whisperModelSize,
-      llmProvider = "deepseek",
+      llmProvider,
       prompt,
       funasrUrl,
     } = body;
@@ -263,16 +249,10 @@ export async function POST(request: NextRequest) {
 
     console.log("Transcription text length:", fullText.length);
 
-    // 使用 LLM 进行智能分段
-    const llmApiKey = process.env.DEEPSEEK_API_KEY; // 需要配置 DeepSeek API Key
+    // 使用 LLM 进行智能分段（失败时自动回退到基于时间的分段）
     let llmSegments: any[] = [];
-
-    if (llmApiKey && (llmProvider === "deepseek" || llmProvider === "openrouter")) {
-      try {
-        llmSegments = await segmentWithLLM(fullText, llmProvider, llmApiKey);
-      } catch (llmError) {
-        console.warn("LLM segmentation failed, using simple segmentation:", llmError);
-      }
+    if (fullText.trim()) {
+      llmSegments = await segmentWithLLM(fullText, llmProvider, session.user.id);
     }
 
     // 如果 LLM 分段失败，使用简单的基于时间的分段

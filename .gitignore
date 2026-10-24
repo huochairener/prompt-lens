@@ -34,3 +34,6 @@ playwright-report/
 temp_*/
 temp/
 nul/
+
+# Local agent workspace (memory, skills)
+.workbuddy/

@@ -9,7 +9,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { messages, provider = "deepseek" } = await request.json();
+    // provider 缺省时使用运行时当前提供商
+    const { messages, provider } = await request.json();
 
     if (!messages || !Array.isArray(messages)) {
       return NextResponse.json({ error: "Invalid messages" }, { status: 400 });
@@ -17,7 +18,7 @@ export async function POST(request: NextRequest) {
 
     const reply = await callAIProvider({
       userId: session.user.id,
-      provider,
+      provider: typeof provider === "string" && provider.trim() ? provider : undefined,
       messages,
     });
 

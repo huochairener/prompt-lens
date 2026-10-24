@@ -1,8 +1,8 @@
-import axios from "axios";
-import { db } from "@/lib/db";
-import { userApiKeys } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
-import { decryptApiKey, isValidEncryptedKey } from "@/lib/utils/encryption";
+import { createChatCompletion } from "@/lib/ai/providers/client";
+import { getProviderConfig } from "@/lib/ai/providers/config";
+import { resolveProviderApiKey } from "@/lib/ai/providers/resolve-key";
+import { resolveActiveProviderId } from "@/lib/ai/providers/runtime";
+import type { ProviderConfig } from "@/lib/ai/providers/types";
 
 // 时间轴片段
 export interface VideoSegment {
@@ -53,60 +53,8 @@ export interface ParseResult {
   error?: string;
 }
 
-// API 配置
-const API_CONFIGS = {
-  zhipu: {
-    url: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-    model: "glm-4v-plus",
-  },
-  gemini: {
-    url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent",
-    model: "gemini-2.0-flash-exp",
-  },
-  openrouter: {
-    url: "https://openrouter.ai/api/v1/chat/completions",
-    model: "meta-llama/llama-3.1-8b-instruct",
-  },
-};
-
-export type ApiProvider = "zhipu" | "gemini" | "openrouter";
-
-/**
- * 获取用户的 API Key（优先从数据库读取，没有则从环境变量读取）
- */
-async function getUserApiKey(
-  userId: string,
-  provider: ApiProvider
-): Promise<string | null> {
-  // 先从数据库读取
-  const result = await db.query.userApiKeys.findFirst({
-    where: eq(userApiKeys.userId, userId),
-  });
-
-  if (result && result.isActive) {
-    // 解密 API Key（支持加密和未加密的旧数据）
-    try {
-      if (isValidEncryptedKey(result.apiKey)) {
-        return decryptApiKey(result.apiKey);
-      }
-      // 兼容旧数据：未加密的明文
-      return result.apiKey;
-    } catch (error) {
-      console.error(`[VideoEditor] Failed to decrypt API key for ${provider}:`, error);
-    }
-  }
-
-  // 数据库没有，则从环境变量读取
-  if (provider === "openrouter") {
-    return process.env.OPENROUTER_API_KEY || null;
-  } else if (provider === "zhipu") {
-    return process.env.ZHIPU_API_KEY || null;
-  } else if (provider === "gemini") {
-    return process.env.GEMINI_API_KEY || null;
-  }
-
-  return null;
-}
+/** 提供商 id，取值见 config/ai-providers.json */
+export type ApiProvider = string;
 
 /**
  * 调用 AI 解析剪辑指令
@@ -115,18 +63,27 @@ export async function parseEditInstruction(
   userId: string,
   prompt: string,
   videoDuration: number,
-  provider: ApiProvider = "zhipu"
+  provider?: ApiProvider
 ): Promise<ParseResult> {
-  const apiKey = await getUserApiKey(userId, provider);
+  const providerId = provider?.trim() || (await resolveActiveProviderId());
 
-  if (!apiKey) {
+  let providerConfig: ProviderConfig;
+  try {
+    providerConfig = getProviderConfig(providerId);
+  } catch (error) {
     return {
       success: false,
-      error: "未配置 API Key，请在设置中添加",
+      error: error instanceof Error ? error.message : `未知的 AI 提供商：${providerId}`,
     };
   }
 
-  const config = API_CONFIGS[provider];
+  const apiKey = await resolveProviderApiKey(providerConfig, { userId });
+  if (!apiKey) {
+    return {
+      success: false,
+      error: `未配置 ${providerConfig.label} 的 API Key，请在设置或环境变量中添加`,
+    };
+  }
 
   const systemPrompt = `你是一个视频剪辑助手。用户会给你一个剪辑描述，你需要解析并生成剪辑指令。
 
@@ -162,99 +119,27 @@ export async function parseEditInstruction(
   const userMessage = `视频总时长 ${videoDuration} 秒，我的剪辑需求是：${prompt}`;
 
   try {
-    let response;
+    const completion = await createChatCompletion({
+      provider: providerId,
+      apiKey,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userMessage },
+      ],
+      maxOutputTokens: providerConfig.maxOutputTokens,
+      temperature: providerConfig.temperature,
+    });
 
-    if (provider === "zhipu") {
-      response = await axios.post(
-        config.url,
-        {
-          model: config.model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userMessage },
-          ],
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
-      const content = response.data.choices[0].message.content;
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-
-      if (!jsonMatch) {
-        return { success: false, error: "AI 返回格式错误" };
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]);
-      return validateAndFixInstruction(parsed, videoDuration);
-    } else if (provider === "gemini") {
-      response = await axios.post(
-        `${config.url}?key=${apiKey}`,
-        {
-          contents: [
-            {
-              role: "user",
-              parts: [{ text: `${systemPrompt}\n\n${userMessage}` }],
-            },
-          ],
-        },
-        {
-          headers: {
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
-      const content = response.data.candidates[0].content.parts[0].text;
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-
-      if (!jsonMatch) {
-        return { success: false, error: "AI 返回格式错误" };
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]);
-      return validateAndFixInstruction(parsed, videoDuration);
-    } else {
-      // openrouter
-      response = await axios.post(
-        config.url,
-        {
-          model: config.model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userMessage },
-          ],
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:3000",
-            "X-Title": "Prompt Analyzer",
-          },
-        }
-      );
-
-      const content = response.data.choices[0].message.content;
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-
-      if (!jsonMatch) {
-        return { success: false, error: "AI 返回格式错误" };
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]);
-      return validateAndFixInstruction(parsed, videoDuration);
+    const jsonMatch = completion.text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return { success: false, error: "AI 返回格式错误" };
     }
-  } catch (error: any) {
-    console.error("AI 解析失败:", error.response?.data || error.message);
-    return {
-      success: false,
-      error: error.response?.data?.error?.message || error.message || "AI 调用失败",
-    };
+
+    return validateAndFixInstruction(JSON.parse(jsonMatch[0]), videoDuration);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "AI 调用失败";
+    console.error("AI 解析失败:", message);
+    return { success: false, error: message };
   }
 }
 

@@ -6,6 +6,7 @@
 import { decryptApiKey, isValidEncryptedKey } from "@/lib/utils/encryption";
 import { db, userApiKeys } from "@/lib/db";
 import { and, desc, eq } from "drizzle-orm";
+import { getServiceBaseUrl } from "@/lib/ai/providers/config";
 import { buildVideoModelPayload, isVeoModel } from "./video-models";
 
 // ============ 类型定义 ============
@@ -90,7 +91,9 @@ export async function getUserProviderApiKey(
 
 // ============ Kie.ai Provider ============
 
-const KIE_API_BASE_URL = process.env.KIE_API_BASE_URL || "https://api.kie.ai";
+// base URL 来自 config/ai-providers.json 的 services.kie-video，
+// 可用 KIE_API_BASE_URL / KIE_AI_BASE_URL 覆盖
+const KIE_API_BASE_URL = getServiceBaseUrl("kie-video");
 
 function kieBuildHeaders(apiKey: string) {
   return {

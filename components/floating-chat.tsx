@@ -44,7 +44,8 @@ export function FloatingChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedProvider, setSelectedProvider] = useState<"deepseek" | "zhipu" | "openrouter">("deepseek");
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const [providers, setProviders] = useState<Array<{ id: string; label: string }>>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -56,6 +57,23 @@ export function FloatingChat() {
       scrollToBottom();
     }
   }, [messages, isOpen]);
+
+  // 提供商列表来自 config/ai-providers.json，不在前端写死
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/settings/ai-provider", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        const list: Array<{ id: string; label: string }> = data.providers ?? [];
+        setProviders(list);
+        setSelectedProvider((current) => current || data.activeProviderId || list[0]?.id || "");
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
@@ -137,15 +155,19 @@ export function FloatingChat() {
               </div>
               <span className="text-white font-medium">AI 助手</span>
             </div>
-            <select
-              value={selectedProvider}
-              onChange={(e) => setSelectedProvider(e.target.value as any)}
-              className="bg-white/20 text-white text-xs px-2 py-1 rounded border border-white/30 outline-none"
-            >
-              <option value="deepseek">DeepSeek</option>
-              <option value="zhipu">智谱AI</option>
-              <option value="openrouter">OpenRouter</option>
-            </select>
+            {providers.length > 0 && (
+              <select
+                value={selectedProvider}
+                onChange={(e) => setSelectedProvider(e.target.value)}
+                className="bg-white/20 text-white text-xs px-2 py-1 rounded border border-white/30 outline-none"
+              >
+                {providers.map((provider) => (
+                  <option key={provider.id} value={provider.id} className="text-[#141413]">
+                    {provider.label}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           {/* 消息区域 */}
