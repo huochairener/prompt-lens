@@ -6,6 +6,7 @@
       "label": "OpenRouter",
       "protocol": "openai-chat",
       "baseUrl": "https://openrouter.ai/api/v1",
+      "path": "/chat/completions",
       "apiKeyEnv": ["OPENROUTER_API_KEY"],
       "defaultModel": "google/gemini-2.5-flash",
       "keyStrategy": "platform",
@@ -13,55 +14,6 @@
         "HTTP-Referer": "https://prompt-analyzer.com",
         "X-Title": "Prompt Analyzer"
       }
-    },
-    {
-      "id": "deepseek",
-      "label": "DeepSeek",
-      "protocol": "openai-chat",
-      "baseUrl": "https://api.deepseek.com/v1",
-      "apiKeyEnv": ["DEEPSEEK_API_KEY"],
-      "defaultModel": "deepseek-chat"
-    },
-    {
-      "id": "zhipu",
-      "label": "Zhipu AI",
-      "protocol": "openai-chat",
-      "baseUrl": "https://open.bigmodel.cn/api/paas/v4",
-      "apiKeyEnv": ["ZHIPU_API_KEY"],
-      "defaultModel": "glm-4v-plus"
-    },
-    {
-      "id": "gemini",
-      "label": "Google Gemini",
-      "protocol": "openai-chat",
-      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
-      "apiKeyEnv": ["GEMINI_API_KEY"],
-      "defaultModel": "gemini-2.0-flash"
-    },
-    {
-      "id": "openai",
-      "label": "OpenAI",
-      "protocol": "openai-chat",
-      "baseUrl": "https://api.openai.com/v1",
-      "apiKeyEnv": ["OPENAI_API_KEY"],
-      "defaultModel": "gpt-4o-mini"
-    },
-    {
-      "id": "openai-responses",
-      "label": "OpenAI (Responses)",
-      "protocol": "openai-responses",
-      "baseUrl": "https://api.openai.com/v1",
-      "apiKeyEnv": ["OPENAI_API_KEY"],
-      "defaultModel": "gpt-4o-mini"
-    },
-    {
-      "id": "anthropic",
-      "label": "Anthropic",
-      "protocol": "anthropic-messages",
-      "baseUrl": "https://api.anthropic.com",
-      "apiKeyEnv": ["ANTHROPIC_API_KEY"],
-      "defaultModel": "claude-sonnet-4-5",
-      "anthropicVersion": "2023-06-01"
     },
     {
       "id": "kie",
@@ -75,7 +27,7 @@
       "extraBody": { "include_thoughts": false },
       "modelPaths": {
         "gemini-3-8-flash": "/gemini-3-8-flash-openai/v1/chat/completions",
-        "gemini-3-5-flash-thinking": "/gemini-3-5-flash-openai/v1/chat/completions",
+        "gemini-3-5-flash-thinking": "/gemini-3-5-flash-thinking-openai/v1/chat/completions",
         "gemini-2.5-pro": "/gemini-2.5-pro/v1/chat/completions"
       }
     }

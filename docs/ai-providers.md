@@ -93,7 +93,7 @@ const messages = [{
 
 ## 4. 密钥来源
 
-- `platform`：只用平台 Key（后台在线或环境变量），如 `openrouter`、`deepseek`、`openai`。
+- `platform`：只用平台 Key（后台在线或环境变量），如内置的 `openrouter`。
 - `user`：只用用户保存的 Key（BYOK），如 `kie`。
 - `either`：先用户 Key，再平台 Key。
 

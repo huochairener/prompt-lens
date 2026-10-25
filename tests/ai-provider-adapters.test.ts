@@ -1,8 +1,54 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createChatCompletion } from "@/lib/ai/providers/client";
+import { resetProviderCatalogCache } from "@/lib/ai/providers/config";
 import { ProviderRequestError } from "@/lib/ai/providers/errors";
 import type { FetchLike } from "@/lib/ai/providers/types";
 import { describeAnalysisProviderError } from "@/lib/ai/provider-error";
+
+/**
+ * 默认配置文件只保留 openrouter + kie，这三种协议的连通性用例
+ * 这里通过 AI_PROVIDERS_CONFIG 注入测试专用的提供商来覆盖。
+ */
+const TEST_PROVIDERS = {
+  providers: [
+    {
+      id: "openai",
+      label: "OpenAI",
+      protocol: "openai-chat",
+      baseUrl: "https://api.openai.com/v1",
+      defaultModel: "gpt-4o-mini",
+      apiKeyEnv: ["OPENAI_API_KEY"],
+    },
+    {
+      id: "openai-responses",
+      label: "OpenAI (Responses)",
+      protocol: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      defaultModel: "gpt-4o-mini",
+      apiKeyEnv: ["OPENAI_API_KEY"],
+    },
+    {
+      id: "anthropic",
+      label: "Anthropic",
+      protocol: "anthropic-messages",
+      baseUrl: "https://api.anthropic.com",
+      defaultModel: "claude-sonnet-4-5",
+      anthropicVersion: "2023-06-01",
+      apiKeyEnv: ["ANTHROPIC_API_KEY"],
+    },
+  ],
+};
+
+beforeAll(() => {
+  vi.stubEnv("AI_PROVIDERS_CONFIG", JSON.stringify(TEST_PROVIDERS));
+  resetProviderCatalogCache();
+});
+
+afterAll(() => {
+  vi.unstubAllEnvs();
+  resetProviderCatalogCache();
+});
+
 
 interface CapturedCall {
   url: string;

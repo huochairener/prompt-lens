@@ -32,14 +32,22 @@ describe("provider endpoint resolution", () => {
 });
 
 describe("provider catalog", () => {
-  it("ships every supported protocol", () => {
+  it("ships only the openrouter provider plus kie", () => {
     const catalog = loadProviderCatalog({});
     const protocols = new Set(catalog.providers.map((provider) => provider.protocol));
 
-    expect(protocols).toContain("openai-chat");
-    expect(protocols).toContain("openai-responses");
-    expect(protocols).toContain("anthropic-messages");
+    expect(protocols).toEqual(new Set(["openai-chat"]));
+    expect(catalog.providers.map((provider) => provider.id).sort()).toEqual(["kie", "openrouter"]);
     expect(catalog.defaultProviderId).toBe("openrouter");
+  });
+
+  it("resolves the openrouter endpoint from base url and path", () => {
+    const catalog = loadProviderCatalog({});
+    const openrouter = catalog.providers.find((provider) => provider.id === "openrouter");
+
+    expect(openrouter?.baseUrl).toBe("https://openrouter.ai/api/v1");
+    expect(resolveEndpoint(openrouter!.baseUrl, openrouter!.path))
+      .toBe("https://openrouter.ai/api/v1/chat/completions");
   });
 
   it("keeps KIE model channels in configuration", () => {
@@ -51,19 +59,19 @@ describe("provider catalog", () => {
 
   it("lets environment variables override base url and model", () => {
     const catalog = loadProviderCatalog({
-      AI_PROVIDER_OPENAI_BASE_URL: "https://gateway.example.com/v1",
-      AI_PROVIDER_OPENAI_MODEL: "custom-model",
+      AI_PROVIDER_OPENROUTER_BASE_URL: "https://gateway.example.com/v1",
+      AI_PROVIDER_OPENROUTER_MODEL: "custom-model",
     });
-    const openai = catalog.providers.find((provider) => provider.id === "openai");
+    const openrouter = catalog.providers.find((provider) => provider.id === "openrouter");
 
-    expect(openai?.baseUrl).toBe("https://gateway.example.com/v1");
-    expect(openai?.defaultModel).toBe("custom-model");
+    expect(openrouter?.baseUrl).toBe("https://gateway.example.com/v1");
+    expect(openrouter?.defaultModel).toBe("custom-model");
   });
 
   it("adds providers declared through AI_PROVIDERS_CONFIG", () => {
     const catalog = loadProviderCatalog({
       AI_PROVIDERS_CONFIG: JSON.stringify({
-        defaultProvider: "anthropic",
+        defaultProvider: "internal-gateway",
         providers: [
           {
             id: "internal-gateway",
@@ -83,7 +91,7 @@ describe("provider catalog", () => {
       baseUrl: "https://llm.internal/v1",
       defaultModel: "internal-large",
     });
-    expect(catalog.defaultProviderId).toBe("anthropic");
+    expect(catalog.defaultProviderId).toBe("internal-gateway");
   });
 
   it("ignores broken AI_PROVIDERS_CONFIG instead of crashing", () => {
@@ -102,8 +110,8 @@ describe("active provider switching", () => {
     resetActiveProvider();
     expect(getActiveProviderId()).toBe(getDefaultProviderId());
 
-    setActiveProvider("anthropic");
-    expect(getActiveProviderId()).toBe("anthropic");
+    setActiveProvider("kie");
+    expect(getActiveProviderId()).toBe("kie");
 
     resetActiveProvider();
     expect(getActiveProviderId()).toBe(getDefaultProviderId());

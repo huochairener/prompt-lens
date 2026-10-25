@@ -26,35 +26,35 @@ describe("在线覆盖层", () => {
       {
         activeProviderId: null,
         secrets: {},
-        overrides: [{ id: "openai", baseUrl: "https://gateway.internal/v1", defaultModel: "qwen-max" }],
+        overrides: [{ id: "openrouter", baseUrl: "https://gateway.internal/v1", defaultModel: "qwen-max" }],
       },
     );
-    const openai = catalog.providers.find((provider) => provider.id === "openai");
+    const openrouter = catalog.providers.find((provider) => provider.id === "openrouter");
 
-    expect(openai?.baseUrl).toBe("https://gateway.internal/v1");
-    expect(openai?.defaultModel).toBe("qwen-max");
-    expect(openai?.overriddenFields).toEqual(["baseUrl", "defaultModel"]);
-    expect(openai?.custom).toBe(false);
+    expect(openrouter?.baseUrl).toBe("https://gateway.internal/v1");
+    expect(openrouter?.defaultModel).toBe("qwen-max");
+    expect(openrouter?.overriddenFields).toEqual(["baseUrl", "defaultModel"]);
+    expect(openrouter?.custom).toBe(false);
   });
 
   it("在线覆盖优先于环境变量，未覆盖的字段仍跟随环境变量", () => {
     const catalog = loadProviderCatalog(
       {
-        AI_PROVIDER_OPENAI_BASE_URL: "https://from-env/v1",
-        AI_PROVIDER_OPENAI_MODEL: "env-model",
+        AI_PROVIDER_OPENROUTER_BASE_URL: "https://from-env/v1",
+        AI_PROVIDER_OPENROUTER_MODEL: "env-model",
       },
       {
         activeProviderId: null,
         secrets: {},
-        overrides: [{ id: "openai", baseUrl: "https://from-db/v1" }],
+        overrides: [{ id: "openrouter", baseUrl: "https://from-db/v1" }],
       },
     );
-    const openai = catalog.providers.find((provider) => provider.id === "openai");
+    const openrouter = catalog.providers.find((provider) => provider.id === "openrouter");
 
     // baseUrl 被在线配置锁定，环境变量不再生效
-    expect(openai?.baseUrl).toBe("https://from-db/v1");
+    expect(openrouter?.baseUrl).toBe("https://from-db/v1");
     // 模型没在在线配置里出现，环境变量继续生效
-    expect(openai?.defaultModel).toBe("env-model");
+    expect(openrouter?.defaultModel).toBe("env-model");
   });
 
   it("追加在线新增的提供商并标记 custom", () => {
@@ -100,21 +100,21 @@ describe("在线覆盖层", () => {
   it("停用的提供商保留在目录里但不可切换", () => {
     const catalog = loadProviderCatalog(
       {},
-      { activeProviderId: null, secrets: {}, overrides: [{ id: "deepseek", enabled: false }] },
+      { activeProviderId: null, secrets: {}, overrides: [{ id: "kie", enabled: false }] },
     );
-    const deepseek = catalog.providers.find((provider) => provider.id === "deepseek");
+    const kie = catalog.providers.find((provider) => provider.id === "kie");
 
-    expect(deepseek?.enabled).toBe(false);
-    expect(catalog.activeProviderId).not.toBe("deepseek");
+    expect(kie?.enabled).toBe(false);
+    expect(catalog.activeProviderId).not.toBe("kie");
   });
 
   it("使用数据库里的 activeProviderId，忽略失效的切换记录", () => {
     const switched = loadProviderCatalog({}, {
-      activeProviderId: "anthropic",
+      activeProviderId: "kie",
       secrets: {},
       overrides: [],
     });
-    expect(switched.activeProviderId).toBe("anthropic");
+    expect(switched.activeProviderId).toBe("kie");
     expect(switched.defaultProviderId).toBe("openrouter");
 
     const invalid = loadProviderCatalog({}, {
@@ -130,47 +130,47 @@ describe("平台密钥优先级", () => {
   it("数据库里保存的 Key 覆盖环境变量里的 Key", () => {
     process.env.BETTER_AUTH_SECRET = "unit-test-secret-value";
     const catalog = loadProviderCatalog(
-      { OPENAI_API_KEY: "env-key", BETTER_AUTH_SECRET: "unit-test-secret-value" },
+      { OPENROUTER_API_KEY: "env-key", BETTER_AUTH_SECRET: "unit-test-secret-value" },
       {
         activeProviderId: null,
         overrides: [],
-        secrets: { openai: secretOf("sk-from-database") },
+        secrets: { openrouter: secretOf("sk-from-database") },
       },
     );
-    const openai = catalog.providers.find((provider) => provider.id === "openai");
+    const openrouter = catalog.providers.find((provider) => provider.id === "openrouter");
 
-    expect(openai?.secretApiKey).toBe("sk-from-database");
-    expect(openai?.secretHint).toBe("…base");
-    expect(readPlatformApiKey(openai!, { OPENAI_API_KEY: "env-key" })).toBe("sk-from-database");
+    expect(openrouter?.secretApiKey).toBe("sk-from-database");
+    expect(openrouter?.secretHint).toBe("…base");
+    expect(readPlatformApiKey(openrouter!, { OPENROUTER_API_KEY: "env-key" })).toBe("sk-from-database");
   });
 
   it("没有在线 Key 时回退到环境变量", () => {
     const catalog = loadProviderCatalog(
-      { OPENAI_API_KEY: "env-key" },
+      { OPENROUTER_API_KEY: "env-key" },
       { activeProviderId: null, overrides: [], secrets: {} },
     );
-    const openai = catalog.providers.find((provider) => provider.id === "openai");
+    const openrouter = catalog.providers.find((provider) => provider.id === "openrouter");
 
-    expect(openai?.secretApiKey).toBeUndefined();
-    expect(readPlatformApiKey(openai!, { OPENAI_API_KEY: "env-key" })).toBe("env-key");
+    expect(openrouter?.secretApiKey).toBeUndefined();
+    expect(readPlatformApiKey(openrouter!, { OPENROUTER_API_KEY: "env-key" })).toBe("env-key");
   });
 
   it("密钥解密失败时不影响配置加载", () => {
     const catalog = loadProviderCatalog(
-      { OPENAI_API_KEY: "env-key", BETTER_AUTH_SECRET: "another-secret" },
+      { OPENROUTER_API_KEY: "env-key", BETTER_AUTH_SECRET: "another-secret" },
       {
         activeProviderId: null,
         overrides: [],
         secrets: {
-          openai: { cipher: "aa:bb:cc", hint: "…bad", updatedAt: new Date().toISOString() },
+          openrouter: { cipher: "aa:bb:cc", hint: "…bad", updatedAt: new Date().toISOString() },
         },
       },
     );
-    const openai = catalog.providers.find((provider) => provider.id === "openai");
+    const openrouter = catalog.providers.find((provider) => provider.id === "openrouter");
 
-    expect(openai).toBeTruthy();
-    expect(openai?.secretApiKey).toBeUndefined();
+    expect(openrouter).toBeTruthy();
+    expect(openrouter?.secretApiKey).toBeUndefined();
     // 解密失败时仍能回退到环境变量
-    expect(readPlatformApiKey(openai!, { OPENAI_API_KEY: "env-key" })).toBe("env-key");
+    expect(readPlatformApiKey(openrouter!, { OPENROUTER_API_KEY: "env-key" })).toBe("env-key");
   });
 });
