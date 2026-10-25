@@ -260,4 +260,9 @@ const { text, usage, providerId } = await createChatCompletion({
 - 在线配置存在 `ai_settings` 单行表里，迁移脚本为 `drizzle/0005_unknown_silver_fox.sql`
   （同时把 `user_api_keys.provider` 从枚举改成 `varchar(64)`），部署前先执行
   `pnpm db:migrate`。
+- **历史库（用 `db:push` 建、记录表为空）直接 `db:migrate` 会报 `type "xxx" already exists`**：
+  drizzle 迁移器只取 `drizzle.__drizzle_migrations` 里 `created_at` 最大的一行做比较，
+  记录表为空时它会从 `0000` 重放。先跑 `pnpm db:baseline` 补一条 0004 基线
+  （脚本会校验 0000~0004 的产物是否真的存在），再执行 `pnpm db:migrate` 就只跑 0005。
+  注意 `db:baseline` 与 `db:migrate` 都必须使用 Neon **直连**地址（去掉 `-pooler`）。
 - 并发写入没有乐观锁：多管理员同时编辑以最后一次写入为准，实际操作频率极低。
