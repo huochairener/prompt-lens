@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { loadProviderCatalog } from "@/lib/ai/providers/config";
-import { readPlatformApiKey } from "@/lib/ai/providers/keys";
+import { readOwnApiKey, readPlatformApiKey } from "@/lib/ai/providers/keys";
 import { encryptApiKey } from "@/lib/utils/encryption";
 import type { StoredSecret } from "@/lib/ai/providers/types";
 
@@ -126,8 +126,8 @@ describe("在线覆盖层", () => {
   });
 });
 
-describe("平台密钥优先级", () => {
-  it("数据库里保存的 Key 覆盖环境变量里的 Key", () => {
+describe("密钥来源拆分", () => {
+  it("用户自己保存的 Key 与平台 Key 分开，互不覆盖", () => {
     process.env.BETTER_AUTH_SECRET = "unit-test-secret-value";
     const catalog = loadProviderCatalog(
       { OPENROUTER_API_KEY: "env-key", BETTER_AUTH_SECRET: "unit-test-secret-value" },
@@ -139,12 +139,15 @@ describe("平台密钥优先级", () => {
     );
     const openrouter = catalog.providers.find((provider) => provider.id === "openrouter");
 
+    // 在线保存的 Key 属于「这个用户自己」
     expect(openrouter?.secretApiKey).toBe("sk-from-database");
     expect(openrouter?.secretHint).toBe("…base");
-    expect(readPlatformApiKey(openrouter!, { OPENROUTER_API_KEY: "env-key" })).toBe("sk-from-database");
+    expect(readOwnApiKey(openrouter!)).toBe("sk-from-database");
+    // 平台 Key 只认环境变量 / 内联，不会被用户 Key 顶掉，也不会被降级成平台额度
+    expect(readPlatformApiKey(openrouter!, { OPENROUTER_API_KEY: "env-key" })).toBe("env-key");
   });
 
-  it("没有在线 Key 时回退到环境变量", () => {
+  it("没有在线 Key 时平台 Key 照常从环境变量读取", () => {
     const catalog = loadProviderCatalog(
       { OPENROUTER_API_KEY: "env-key" },
       { activeProviderId: null, overrides: [], secrets: {} },
@@ -152,6 +155,7 @@ describe("平台密钥优先级", () => {
     const openrouter = catalog.providers.find((provider) => provider.id === "openrouter");
 
     expect(openrouter?.secretApiKey).toBeUndefined();
+    expect(readOwnApiKey(openrouter!)).toBeNull();
     expect(readPlatformApiKey(openrouter!, { OPENROUTER_API_KEY: "env-key" })).toBe("env-key");
   });
 

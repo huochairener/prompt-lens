@@ -18,7 +18,9 @@ export {
   refreshProviderCatalog,
   resetProviderCatalogCache,
   type CatalogRuntime,
+  type LoadCatalogOptions,
   type ProviderCatalog,
+  type ProviderScope,
 } from "./config";
 export {
   assertProviderUsable,
@@ -32,7 +34,7 @@ export {
   setActiveProvider,
   type ProviderStatus,
 } from "./runtime";
-export { isUserKeyProvider, readPlatformApiKey } from "./keys";
+export { isUserKeyProvider, readOwnApiKey, readPlatformApiKey } from "./keys";
 export { resolveProviderApiKey, requireProviderApiKey, type ResolveProviderKeyOptions } from "./resolve-key";
 export { loadImagePayload, parseDataUrl, type ImagePayload } from "./images";
 export { getProtocolAdapter } from "./adapters";

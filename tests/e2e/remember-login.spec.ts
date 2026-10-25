@@ -11,7 +11,7 @@ async function mockApi(page: Page, currentSession: ReturnType<typeof session> | 
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const json = path === "/api/auth/get-session" ? currentSession
-      : path === "/api/analyze/quota" ? { limit: 2, used: 0, remaining: 2, hasOwnApiKey: false }
+      : path === "/api/analyze/models" ? { options: [], defaultId: null }
       : {};
     await route.fulfill({ json });
   });

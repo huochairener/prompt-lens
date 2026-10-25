@@ -1,6 +1,7 @@
 import axios from "axios";
 import { findProvider } from "@/lib/ai/providers/config";
 import { ProviderRequestError } from "@/lib/ai/providers/errors";
+import type { ProviderScope } from "@/lib/ai/providers/store";
 import type { Locale } from "@/i18n/config";
 
 const FALLBACK_NAMES: Record<string, string> = {
@@ -13,13 +14,18 @@ const FALLBACK_NAMES: Record<string, string> = {
   openai: "OpenAI",
 };
 
-function providerName(provider: string): string {
-  return findProvider(provider)?.label ?? FALLBACK_NAMES[provider] ?? provider;
+function providerName(scope: ProviderScope, provider: string): string {
+  return findProvider(scope, provider)?.label ?? FALLBACK_NAMES[provider] ?? provider;
 }
 
 /** 把上游状态码翻译成可执行的提示；无匹配时返回 null */
-function describeStatus(provider: string, status: number | undefined, locale: Locale): string | null {
-  const name = providerName(provider);
+function describeStatus(
+  scope: ProviderScope,
+  provider: string,
+  status: number | undefined,
+  locale: Locale,
+): string | null {
+  const name = providerName(scope, provider);
 
   if (status === 401 || status === 403) {
     if (locale === "en") {
@@ -46,6 +52,7 @@ export function describeAnalysisProviderError(
   provider: string,
   error: unknown,
   locale: Locale = "zh",
+  scope: ProviderScope = null,
 ): string {
   const status = error instanceof ProviderRequestError
     ? error.status
@@ -53,7 +60,7 @@ export function describeAnalysisProviderError(
       ? error.response?.status
       : undefined;
 
-  const friendly = describeStatus(provider, status, locale);
+  const friendly = describeStatus(scope, provider, status, locale);
   if (friendly) return friendly;
 
   return error instanceof Error ? error.message : "Analysis failed";

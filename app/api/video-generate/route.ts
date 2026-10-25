@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
     // 获取用户配置的 provider API Key
     const userApiKey = await getUserProviderApiKey(session.user.id, provider as any);
     if (!userApiKey?.trim()) {
-      return NextResponse.json({ error: "请先在设置中配置你自己的 KIE API Key，视频生成不使用平台额度", code: "PERSONAL_API_KEY_REQUIRED" }, { status: 403 });
+      return NextResponse.json({ error: "请先在设置中配置你自己的 KIE API Key，视频生成只使用你自己的 Key", code: "PERSONAL_API_KEY_REQUIRED" }, { status: 403 });
     }
 
     const videoProvider = createVideoProvider(provider, userApiKey);

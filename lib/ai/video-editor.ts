@@ -65,11 +65,11 @@ export async function parseEditInstruction(
   videoDuration: number,
   provider?: ApiProvider
 ): Promise<ParseResult> {
-  const providerId = provider?.trim() || (await resolveActiveProviderId());
+  const providerId = provider?.trim() || (await resolveActiveProviderId(userId));
 
   let providerConfig: ProviderConfig;
   try {
-    providerConfig = getProviderConfig(providerId);
+    providerConfig = getProviderConfig(userId, providerId);
   } catch (error) {
     return {
       success: false,
@@ -77,7 +77,7 @@ export async function parseEditInstruction(
     };
   }
 
-  const apiKey = await resolveProviderApiKey(providerConfig, { userId });
+  const apiKey = await resolveProviderApiKey(providerConfig, { scope: userId });
   if (!apiKey) {
     return {
       success: false,
@@ -120,6 +120,7 @@ export async function parseEditInstruction(
 
   try {
     const completion = await createChatCompletion({
+      scope: userId,
       provider: providerId,
       apiKey,
       messages: [

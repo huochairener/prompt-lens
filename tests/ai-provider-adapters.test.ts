@@ -83,6 +83,7 @@ describe("openai chat/completions protocol", () => {
     });
 
     const result = await createChatCompletion({
+      scope: null,
       provider: "openai",
       apiKey: "sk-test",
       messages: [{ role: "user", content: "hello" }],
@@ -105,6 +106,7 @@ describe("openai chat/completions protocol", () => {
     const { fetcher, calls } = captureFetch({ choices: [{ message: { content: "ok" } }] });
 
     await createChatCompletion({
+      scope: null,
       provider: "openai",
       apiKey: "sk-test",
       messages: [{
@@ -128,6 +130,7 @@ describe("openai chat/completions protocol", () => {
     const { fetcher, calls } = captureFetch({ choices: [{ message: { content: "kie" } }] });
 
     await createChatCompletion({
+      scope: null,
       provider: "kie",
       model: "gemini-3-8-flash",
       apiKey: "kie-key",
@@ -152,6 +155,7 @@ describe("openai responses protocol", () => {
     });
 
     const result = await createChatCompletion({
+      scope: null,
       provider: "openai-responses",
       apiKey: "sk-test",
       messages: [
@@ -181,6 +185,7 @@ describe("openai responses protocol", () => {
     });
 
     const result = await createChatCompletion({
+      scope: null,
       provider: "openai-responses",
       apiKey: "sk-test",
       messages: [{ role: "user", content: "hello" }],
@@ -199,6 +204,7 @@ describe("anthropic messages protocol", () => {
     });
 
     const result = await createChatCompletion({
+      scope: null,
       provider: "anthropic",
       apiKey: "sk-ant-test",
       messages: [
@@ -241,6 +247,7 @@ describe("provider errors", () => {
     const { fetcher } = captureFetch({ error: { message: "Incorrect API key" } }, 401);
 
     await expect(createChatCompletion({
+      scope: null,
       provider: "openai",
       apiKey: "bad-key",
       messages: [{ role: "user", content: "hello" }],
@@ -256,6 +263,7 @@ describe("provider errors", () => {
     const { fetcher } = captureFetch({ error: { message: "unauthorized" } }, 401);
 
     const error = await createChatCompletion({
+      scope: null,
       provider: "anthropic",
       apiKey: "bad-key",
       messages: [{ role: "user", content: "hello" }],

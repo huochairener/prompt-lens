@@ -1,7 +1,9 @@
 import rawProviders from "@/config/ai-providers.json";
 import { DEFAULT_PROTOCOL_PATHS } from "./endpoint";
 import { ProviderConfigError } from "./errors";
-import { EMPTY_AI_SETTINGS, decryptSecret, readAiSettings, type AiSettingsSnapshot } from "./store";
+import { EMPTY_AI_SETTINGS, decryptSecret, normalizeScope, readAiSettings, readUserRole, type AiSettingsSnapshot, type ProviderScope } from "./store";
+
+export type { ProviderScope };
 import {
   isProviderProtocol,
   type ProviderConfig,
@@ -27,7 +29,12 @@ const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
  */
 const CATALOG_TTL_MS = Number(process.env.AI_CONFIG_CACHE_MS ?? 2000);
 
+/** 进程内最多缓存多少个用户的目录，防止用户数增长把内存吃穿 */
+const MAX_CACHED_SCOPES = Number(process.env.AI_CONFIG_MAX_SCOPES ?? 200);
+
 export interface ProviderCatalog {
+  /** 这份目录属于哪个用户；null 表示未登录的系统基线 */
+  scopeId: string | null;
   /** 当前生效的提供商（在线切换 > 环境变量 > 文件默认值） */
   activeProviderId: string;
   /** 未考虑在线切换时的默认提供商，用于"恢复默认" */
@@ -36,6 +43,21 @@ export interface ProviderCatalog {
   services: ServiceConfig[];
   /** 数据库里的原始覆盖项，界面编辑时需要 */
   overrides: ProviderOverride[];
+  /**
+   * 是否允许修改内置提供商的连接信息、引用服务端环境变量 Key。
+   *
+   * 只有管理员为 true。否则普通用户可以把自己的 baseUrl 指到任意服务器，
+   * 顺走平台注入的环境变量 Key（等于把平台密钥泄给别人）。
+   */
+  definitionsEditable: boolean;
+}
+
+/** 一次 AI 调用属于哪个用户；null 表示系统基线（未登录 / 后台任务） */
+
+export interface LoadCatalogOptions {
+  scopeId?: ProviderScope;
+  /** 默认按管理员处理，只有能证明是普通用户时才收紧 */
+  definitionsEditable?: boolean;
 }
 
 /** 来自数据库的运行时覆盖，缺省表示"只用文件 + 环境变量" */
@@ -261,10 +283,32 @@ function resolveDefaultProvider(
 }
 
 /**
+ * 非管理员能写什么，由这里兜底（写入接口也会提前拒绝，避免静默降级）：
+ *   - 预置提供商（文件 / AI_PROVIDERS_CONFIG）：不能改 protocol / baseUrl / path / apiKeyEnv
+ *   - 在线新增的提供商：不能引用服务端环境变量（只能用自己的 Key）
+ */
+function sanitizeOverride(
+  override: ProviderOverride,
+  id: string,
+  editable: boolean,
+  presetIds: ReadonlySet<string>,
+): ProviderOverride {
+  if (editable) return override;
+
+  if (presetIds.has(id)) {
+    const { protocol: _protocol, baseUrl: _baseUrl, path: _path, apiKeyEnv: _env, ...rest } = override;
+    return { ...rest, id };
+  }
+
+  const { apiKeyEnv: _env, ...rest } = override;
+  return { ...rest, id };
+}
+
+/**
  * 读取配置文件 + 环境变量 + 在线覆盖，产出可直接使用的提供商目录。
  *
  * 优先级（高 → 低）：
- *   1. 在线配置（数据库 ai_settings.overrides）
+ *   1. 在线配置（数据库 ai_settings.overrides，**仅当前用户那一行**）
  *   2. 环境变量 AI_PROVIDER_<ID>_*
  *   3. config/ai-providers.json
  *
@@ -273,14 +317,24 @@ function resolveDefaultProvider(
 export function loadProviderCatalog(
   env: Env = process.env,
   runtime: CatalogRuntime = EMPTY_AI_SETTINGS,
+  options: LoadCatalogOptions = {},
 ): ProviderCatalog {
+  const scopeId = normalizeScope(options.scopeId ?? null);
+  const definitionsEditable = options.definitionsEditable ?? true;
   const envOverrides = readEnvJson(env);
+  // 预置提供商 = 配置文件里的 + AI_PROVIDERS_CONFIG 里补的；非管理员都不许改连接信息
+  const presetIds = new Set<string>([
+    ...BASE_PROVIDER_IDS,
+    ...(envOverrides?.providers ?? [])
+      .map((item) => (typeof item?.id === "string" ? item.id.trim() : ""))
+      .filter(Boolean),
+  ]);
   const runtimeOverrides = Array.isArray(runtime.overrides) ? runtime.overrides : [];
   const overrideById = new Map<string, ProviderOverride>();
   for (const override of runtimeOverrides) {
     const id = typeof override?.id === "string" ? override.id.trim() : "";
     if (!id) continue;
-    overrideById.set(id, { ...override, id });
+    overrideById.set(id, sanitizeOverride({ ...override, id }, id, definitionsEditable, presetIds));
   }
 
   // 基线：文件 + AI_PROVIDERS_CONFIG（可能新增提供商）
@@ -373,11 +427,13 @@ export function loadProviderCatalog(
   }
 
   return {
+    scopeId,
     activeProviderId: requestedActive ?? defaultProvider.id,
     defaultProviderId: defaultProvider.id,
     providers,
     services,
     overrides: [...overrideById.values()],
+    definitionsEditable,
   };
 }
 
@@ -390,91 +446,131 @@ export function isBaseProvider(providerId: string): boolean {
   return BASE_PROVIDER_IDS.has(providerId.trim());
 }
 
-// ============ 进程内快照（写入即失效 + 短 TTL） ============
+// ============ 进程内快照（按用户分桶 + 写入即失效 + 短 TTL） ============
 
-let cachedCatalog: ProviderCatalog | null = null;
-let cachedAt = 0;
-let inflightRefresh: Promise<ProviderCatalog> | null = null;
-/** 运行时切换的本地覆盖，优先级高于数据库（主要给测试和紧急兜底用） */
-let localActiveProviderId: string | null = null;
-
-/** 同步读取当前快照；尚未加载过时先返回文件 + 环境变量的基线配置 */
-export function getProviderCatalog(): ProviderCatalog {
-  if (!cachedCatalog) {
-    cachedCatalog = loadProviderCatalog(process.env, EMPTY_AI_SETTINGS);
-    cachedAt = 0; // 标记为"只含基线"，下一次 ensure 会立刻拉取数据库覆盖
-  }
-  return cachedCatalog;
+interface CacheEntry {
+  catalog: ProviderCatalog;
+  /** 0 表示"只有文件基线"，下一次 ensure 会立刻去拉数据库 */
+  at: number;
 }
 
-/** 重新从数据库加载在线配置并替换快照；失败时保留旧快照 */
-export async function refreshProviderCatalog(): Promise<ProviderCatalog> {
-  if (inflightRefresh) return inflightRefresh;
+const catalogs = new Map<string, CacheEntry>();
+const inflightRefreshes = new Map<string, Promise<ProviderCatalog>>();
+/** 运行时切换的本地覆盖（按用户），优先级高于数据库：主要给测试和紧急兜底用 */
+const localActiveProviderIds = new Map<string, string>();
 
-  inflightRefresh = (async () => {
-    const settings = await readAiSettings();
+function scopeKeyOf(scope: ProviderScope): string {
+  return normalizeScope(scope) ?? "__system__";
+}
+
+function baselineCatalog(scope: ProviderScope): ProviderCatalog {
+  // 系统基线只有文件 + 环境变量；普通用户在拿到数据库覆盖前也先按"只读内置"处理
+  return loadProviderCatalog(process.env, EMPTY_AI_SETTINGS, {
+    scopeId: scope,
+    definitionsEditable: !normalizeScope(scope),
+  });
+}
+
+function evictOverflow(): void {
+  if (catalogs.size <= MAX_CACHED_SCOPES) return;
+  const sorted = [...catalogs.entries()].sort((a, b) => a[1].at - b[1].at);
+  for (const [key] of sorted.slice(0, catalogs.size - MAX_CACHED_SCOPES)) {
+    catalogs.delete(key);
+  }
+}
+
+/** 同步读取某个用户的快照；尚未加载过时先返回文件 + 环境变量的基线 */
+export function getProviderCatalog(scope: ProviderScope): ProviderCatalog {
+  const key = scopeKeyOf(scope);
+  const hit = catalogs.get(key);
+  if (hit) return hit.catalog;
+
+  const baseline = baselineCatalog(scope);
+  catalogs.set(key, { catalog: baseline, at: 0 });
+  evictOverflow();
+  return baseline;
+}
+
+/** 重新从数据库加载该用户的在线配置并替换快照；失败时保留旧快照 */
+export async function refreshProviderCatalog(scope: ProviderScope): Promise<ProviderCatalog> {
+  const scopeId = normalizeScope(scope);
+  const key = scopeKeyOf(scopeId);
+  const running = inflightRefreshes.get(key);
+  if (running) return running;
+
+  const task = (async () => {
+    const [settings, role] = await Promise.all([
+      readAiSettings(scopeId),
+      readUserRole(scopeId),
+    ]);
+    const definitionsEditable = role === "admin";
+
     try {
-      const next = loadProviderCatalog(process.env, settings);
-      cachedCatalog = next;
-      cachedAt = Date.now();
+      const next = loadProviderCatalog(process.env, settings, { scopeId, definitionsEditable });
+      catalogs.set(key, { catalog: next, at: Date.now() });
+      evictOverflow();
       return next;
     } catch (error) {
       console.error(
         `[providers] 在线配置合并失败，保留上一份可用配置：${error instanceof Error ? error.message : String(error)}`,
       );
-      if (cachedCatalog) return cachedCatalog;
-      cachedCatalog = loadProviderCatalog(process.env, EMPTY_AI_SETTINGS);
-      cachedAt = Date.now();
-      return cachedCatalog;
+      const previous = catalogs.get(key)?.catalog;
+      if (previous) return previous;
+      const fallback = loadProviderCatalog(process.env, EMPTY_AI_SETTINGS, { scopeId, definitionsEditable });
+      catalogs.set(key, { catalog: fallback, at: Date.now() });
+      return fallback;
     }
   })();
 
+  inflightRefreshes.set(key, task);
   try {
-    return await inflightRefresh;
+    return await task;
   } finally {
-    inflightRefresh = null;
+    inflightRefreshes.delete(key);
   }
 }
 
 /**
- * 确保快照是新鲜的。
- * AI 调用入口（解析 Key、发起对话）会先 await 一次，这样后台改完配置后
+ * 确保某个用户的快照是新鲜的。
+ * AI 调用入口（解析 Key、发起对话）会先 await 一次，这样设置页改完配置后
  * 下一次请求就用新值，不需要重启进程。
  */
-export async function ensureProviderCatalogFresh(): Promise<void> {
-  if (cachedCatalog && Date.now() - cachedAt < CATALOG_TTL_MS) return;
-  await refreshProviderCatalog();
+export async function ensureProviderCatalogFresh(scope: ProviderScope): Promise<void> {
+  const entry = catalogs.get(scopeKeyOf(scope));
+  if (entry && entry.at > 0 && Date.now() - entry.at < CATALOG_TTL_MS) return;
+  await refreshProviderCatalog(scope);
 }
 
 /** 仅用于测试：清空缓存，让新的环境变量生效 */
 export function resetProviderCatalogCache(): void {
-  cachedCatalog = null;
-  cachedAt = 0;
-  inflightRefresh = null;
-  localActiveProviderId = null;
+  catalogs.clear();
+  inflightRefreshes.clear();
+  localActiveProviderIds.clear();
 }
 
-export function setLocalActiveProvider(providerId: string | null): void {
-  localActiveProviderId = providerId;
+export function setLocalActiveProvider(scope: ProviderScope, providerId: string | null): void {
+  const key = scopeKeyOf(scope);
+  if (providerId) localActiveProviderIds.set(key, providerId);
+  else localActiveProviderIds.delete(key);
 }
 
-export function getLocalActiveProviderId(): string | null {
-  return localActiveProviderId;
+export function getLocalActiveProviderId(scope: ProviderScope): string | null {
+  return localActiveProviderIds.get(scopeKeyOf(scope)) ?? null;
 }
 
-export function listProviders(): ProviderConfig[] {
-  return getProviderCatalog().providers.filter((provider) => provider.enabled);
+export function listProviders(scope: ProviderScope): ProviderConfig[] {
+  return getProviderCatalog(scope).providers.filter((provider) => provider.enabled);
 }
 
-export function findProvider(providerId: string): ProviderConfig | null {
-  return getProviderCatalog().providers.find((provider) => provider.id === providerId) ?? null;
+export function findProvider(scope: ProviderScope, providerId: string): ProviderConfig | null {
+  return getProviderCatalog(scope).providers.find((provider) => provider.id === providerId) ?? null;
 }
 
 /** 按 id 取提供商，不存在时抛错 */
-export function getProviderConfig(providerId: string): ProviderConfig {
-  const provider = findProvider(providerId);
+export function getProviderConfig(scope: ProviderScope, providerId: string): ProviderConfig {
+  const provider = findProvider(scope, providerId);
   if (!provider) {
-    const known = getProviderCatalog().providers.map((item) => item.id).join(", ");
+    const known = getProviderCatalog(scope).providers.map((item) => item.id).join(", ");
     throw new ProviderConfigError(`未知的 AI 提供商：${providerId}（已配置：${known}）`);
   }
   if (!provider.enabled) {
@@ -484,21 +580,22 @@ export function getProviderConfig(providerId: string): ProviderConfig {
 }
 
 /** 模型对应的绝对通道路径（KIE 这类按模型分通道的服务） */
-export function getProviderModelPath(providerId: string, model: string): string | null {
-  return findProvider(providerId)?.modelPaths[model] ?? null;
+export function getProviderModelPath(scope: ProviderScope, providerId: string, model: string): string | null {
+  return findProvider(scope, providerId)?.modelPaths[model] ?? null;
 }
 
 /** 实际会发给上游的模型名：在线切换后的 defaultModel */
-export function getEffectiveModel(providerId: string): string | undefined {
-  return findProvider(providerId)?.defaultModel;
+export function getEffectiveModel(scope: ProviderScope, providerId: string): string | undefined {
+  return findProvider(scope, providerId)?.defaultModel;
 }
 
-export function getProviderOverrides(): ProviderOverride[] {
-  return getProviderCatalog().overrides;
+export function getProviderOverrides(scope: ProviderScope): ProviderOverride[] {
+  return getProviderCatalog(scope).overrides;
 }
 
 export function getServiceConfig(serviceId: string): ServiceConfig {
-  const service = getProviderCatalog().services.find((item) => item.id === serviceId);
+  // services 不属于用户配置（视频生成、语音转写等基础设施），共用系统基线
+  const service = getProviderCatalog(null).services.find((item) => item.id === serviceId);
   if (!service) throw new ProviderConfigError(`未知的服务配置：${serviceId}`);
   return service;
 }

@@ -6,19 +6,31 @@ function read(relativePath: string) {
   return fs.readFileSync(path.join(process.cwd(), relativePath), "utf8");
 }
 
-describe("analysis provider surface", () => {
-  it("shows the actual analysis models instead of provider names", () => {
-    const dashboard = read("app/dashboard/page.tsx");
-    const modelOptions = [...dashboard.matchAll(/<option value="((?:platform|kie)-gemini-[^"]+)"[^>]*>/g)]
-      .map((match) => match[1]);
+function exists(relativePath: string) {
+  return fs.existsSync(path.join(process.cwd(), relativePath));
+}
 
-    expect(modelOptions).toEqual([
-      "platform-gemini-3.8-flash",
-      "kie-gemini-3.8-flash",
-      "kie-gemini-3.5-flash",
-      "kie-gemini-2.5-pro",
-    ]);
-    expect(dashboard).toContain("disabled={!trialAccess?.hasOwnApiKey}");
+describe("analysis provider surface", () => {
+  it("renders the model list from the provider catalog instead of a hardcoded list", () => {
+    const dashboard = read("app/dashboard/page.tsx");
+
+    // 不再写死模型 id：所有 option 都由接口返回的 modelOptions 渲染
+    expect(dashboard).not.toMatch(/<option value="(?:platform|kie)-gemini-[^"]+"/);
+    expect(dashboard).toContain('fetch("/api/analyze/models"');
+    expect(dashboard).toContain("{modelOptions.map((option) => (");
+    // 之前用 hasOwnApiKey 锁死下拉，导致配置了别的提供商也选不了
+    expect(dashboard).not.toContain("disabled={!trialAccess?.hasOwnApiKey}");
+  });
+
+  it("no longer offers a platform trial or a shared quota", () => {
+    const dashboard = read("app/dashboard/page.tsx");
+    const route = read("app/api/analyze/route.ts");
+
+    expect(dashboard).not.toContain("trialAccess");
+    expect(dashboard).not.toContain("/api/analyze/quota");
+    expect(route).not.toContain("assertTrialQuota");
+    expect(route).not.toContain("trial-quota");
+    expect(exists("app/api/analyze/quota/route.ts")).toBe(false);
   });
 
   it("only lets users configure KIE in settings", () => {
@@ -32,19 +44,22 @@ describe("analysis provider surface", () => {
     expect(route).toContain('if (provider !== "kie")');
   });
 
-  it("does not count user-funded KIE history against the platform trial", () => {
-    const quota = read("lib/usage/trial-quota.ts");
+  it("resolves the API key on the server from the selected provider", () => {
+    const route = read("app/api/analyze/route.ts");
 
-    expect(quota).not.toContain("analysisHistory");
-    expect(quota).toContain("metadata}->>'apiKeySource' = 'platform'");
+    // 客户端只能选模型，Key 由服务端按提供商配置解析
+    expect(route).toContain("resolveAnalysisTarget");
+    expect(route).toContain("resolveAnalysisKey");
+    expect(route).not.toContain("resolvePlatformAnalysisApiKey");
   });
 
-  it("checks platform quota on the server even when the client requests the platform model", () => {
-    const route = read("app/api/analyze/route.ts");
-    const quota = read("lib/usage/trial-quota.ts");
+  it("keeps server-side env keys for administrators only", () => {
+    const resolveKey = read("lib/ai/providers/resolve-key.ts");
+    const options = read("lib/ai/analysis-options.ts");
 
-    expect(route).toContain("await assertTrialQuota(session.user.id)");
-    expect(route).toContain('status: 402');
-    expect(quota).toContain('code: "TRIAL_QUOTA_EXCEEDED"');
+    expect(resolveKey).toContain("definitionsEditable");
+    expect(options).toContain("definitionsEditable");
+    // 没有自己的 Key 时必须引导用户去配置，而不是偷偷用服务端 Key
+    expect(options).toContain("USER_KEY_REQUIRED");
   });
 });

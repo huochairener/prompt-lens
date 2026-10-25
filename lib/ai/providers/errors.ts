@@ -14,8 +14,8 @@ export class ProviderApiKeyError extends Error {
 
   constructor(providerId: string, label: string, envNames: string[]) {
     const hint = envNames.length > 0
-      ? `请在环境变量中配置 ${envNames.join(" 或 ")}，或在设置中保存该提供商的 API Key`
-      : "请在设置中保存该提供商的 API Key";
+      ? `请先在设置页填写你自己的 API Key（管理员也可以改用环境变量 ${envNames.join(" 或 ")}）`
+      : "请先在设置页填写你自己的 API Key";
     super(`提供商 ${label} (${providerId}) 缺少 API Key。${hint}。`);
     this.name = "ProviderApiKeyError";
     this.providerId = providerId;

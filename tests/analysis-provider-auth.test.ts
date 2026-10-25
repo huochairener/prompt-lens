@@ -1,49 +1,10 @@
 import axios from "axios";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const { findMany } = vi.hoisted(() => ({ findMany: vi.fn() }));
-
-vi.mock("@/lib/db", () => ({
-  db: {
-    query: {
-      userApiKeys: { findMany },
-    },
-  },
-  analysisHistory: {},
-  operationLogs: {},
-  user: {},
-  userApiKeys: {},
-}));
-
-vi.mock("@/lib/utils/encryption", () => ({
-  decryptApiKey: vi.fn((value: string) => value),
-  isValidEncryptedKey: vi.fn(() => false),
-}));
+import { describe, expect, it } from "vitest";
 
 import { describeAnalysisProviderError } from "@/lib/ai/provider-error";
-import {
-  getUsableUserAnalyzeApiKeyProvider,
-  resolveTrialAccess,
-} from "@/lib/usage/trial-quota";
+import { decodeAnalyzeApiKey } from "@/lib/usage/analyze-keys";
 
 describe("analysis provider authentication", () => {
-  beforeEach(() => {
-    findMany.mockReset();
-  });
-
-  it("does not switch away from the provider selected by the user", async () => {
-    findMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ apiKey: "saved-kie-key" }]);
-
-    await expect(
-      getUsableUserAnalyzeApiKeyProvider("user-1", "openrouter"),
-    ).resolves.toBeNull();
-    expect(findMany).toHaveBeenCalledTimes(1);
-  });
-
   it("turns KIE 401 responses into an actionable message", () => {
     const error = new axios.AxiosError(
       "Request failed with status code 401",
@@ -58,23 +19,10 @@ describe("analysis provider authentication", () => {
     );
   });
 
-  it("gives administrators unlimited platform OpenRouter access", () => {
-    expect(resolveTrialAccess("admin", 99, 2)).toEqual({
-      limit: 2,
-      used: 0,
-      remaining: Number.POSITIVE_INFINITY,
-      isAdmin: true,
-      hasOwnApiKey: false,
-      apiKeySource: "platform",
-    });
-  });
-
-  it("limits regular users to two platform OpenRouter analyses", () => {
-    expect(resolveTrialAccess("user", 1, 2)).toMatchObject({
-      used: 1,
-      remaining: 1,
-      isAdmin: false,
-      apiKeySource: "platform",
-    });
+  it("reads plain and encrypted stored keys, rejects empty ones", () => {
+    expect(decodeAnalyzeApiKey("sk-plain")).toBe("sk-plain");
+    expect(decodeAnalyzeApiKey("   ")).toBeNull();
+    // 不是合法的加密串时原样返回，避免历史数据不可用
+    expect(decodeAnalyzeApiKey("aa:bb")).toBe("aa:bb");
   });
 });

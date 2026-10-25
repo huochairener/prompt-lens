@@ -61,12 +61,13 @@ async function segmentWithLLM(
   const userPrompt = `字幕内容：\n${transcription}`;
 
   try {
-    const providerId = llmProvider?.trim() || (await resolveActiveProviderId());
-    const provider = getProviderConfig(providerId);
-    const apiKey = await resolveProviderApiKey(provider, { userId });
+    const providerId = llmProvider?.trim() || (await resolveActiveProviderId(userId));
+    const provider = getProviderConfig(userId, providerId);
+    const apiKey = await resolveProviderApiKey(provider, { scope: userId });
     if (!apiKey) return [];
 
     const completion = await createChatCompletion({
+      scope: userId,
       provider: providerId,
       apiKey,
       messages: [

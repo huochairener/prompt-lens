@@ -1,6 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import { db, userApiKeys } from "@/lib/db";
-import { decodeAnalyzeApiKey } from "@/lib/usage/trial-quota";
+import { decodeAnalyzeApiKey } from "@/lib/usage/analyze-keys";
 import { isUserKeyProvider } from "./keys";
 
 /** 从数据库读取用户保存的某提供商 API Key（最新且可解密的记录优先） */

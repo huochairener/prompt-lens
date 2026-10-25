@@ -51,10 +51,10 @@ describe("provider catalog", () => {
   });
 
   it("keeps KIE model channels in configuration", () => {
-    expect(getProviderModelPath("kie", "gemini-3-8-flash"))
+    expect(getProviderModelPath(null, "kie", "gemini-3-8-flash"))
       .toBe("/gemini-3-8-flash-openai/v1/chat/completions");
-    expect(getProviderModelPath("kie", "gemini-2.5-pro")).toBe("/gemini-2.5-pro/v1/chat/completions");
-    expect(getProviderModelPath("kie", "unknown-model")).toBeNull();
+    expect(getProviderModelPath(null, "kie", "gemini-2.5-pro")).toBe("/gemini-2.5-pro/v1/chat/completions");
+    expect(getProviderModelPath(null, "kie", "unknown-model")).toBeNull();
   });
 
   it("lets environment variables override base url and model", () => {
@@ -107,20 +107,22 @@ describe("provider catalog", () => {
 
 describe("active provider switching", () => {
   it("switches at runtime and resets to the configured default", () => {
-    resetActiveProvider();
-    expect(getActiveProviderId()).toBe(getDefaultProviderId());
+    resetActiveProvider(null);
+    expect(getActiveProviderId(null)).toBe(getDefaultProviderId(null));
 
-    setActiveProvider("kie");
-    expect(getActiveProviderId()).toBe("kie");
+    setActiveProvider(null, "kie");
+    expect(getActiveProviderId(null)).toBe("kie");
+    // 切的是「当前作用域」，系统基线不受影响
+    expect(getActiveProviderId("someone-else")).not.toBe("kie");
 
-    resetActiveProvider();
-    expect(getActiveProviderId()).toBe(getDefaultProviderId());
+    resetActiveProvider(null);
+    expect(getActiveProviderId(null)).toBe(getDefaultProviderId(null));
   });
 
   it("rejects unknown providers", () => {
-    resetActiveProvider();
-    expect(() => setActiveProvider("does-not-exist")).toThrow(ProviderConfigError);
-    resetActiveProvider();
+    resetActiveProvider(null);
+    expect(() => setActiveProvider(null, "does-not-exist")).toThrow(ProviderConfigError);
+    resetActiveProvider(null);
   });
 });
 

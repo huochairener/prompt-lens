@@ -9,7 +9,7 @@
       "path": "/chat/completions",
       "apiKeyEnv": ["OPENROUTER_API_KEY"],
       "defaultModel": "google/gemini-2.5-flash",
-      "keyStrategy": "platform",
+      "keyStrategy": "either",
       "headers": {
         "HTTP-Referer": "https://prompt-analyzer.com",
         "X-Title": "Prompt Analyzer"

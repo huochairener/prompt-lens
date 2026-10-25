@@ -2,10 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db, analysisHistory, operationLogs } from "@/lib/db";
 import { analyzeFrames } from "@/lib/ai/analyzer";
-import { resolveAnalysisModel, resolveLegacyAnalysisProvider, resolvePlatformAnalysisApiKey } from "@/lib/ai/analysis-models";
+import { resolveAnalysisKey, resolveAnalysisTarget } from "@/lib/ai/analysis-options";
 import { checkRateLimit, RateLimitConfigs } from "@/lib/utils/rate-limit";
 import { defaultLocale, isLocale } from "@/i18n/config";
-import { assertTrialQuota, getUsableUserAnalyzeApiKeyProvider, trialQuotaResponse } from "@/lib/usage/trial-quota";
 import { deleteFromR2, extractR2Key } from "@/lib/cloudflare/r2";
 import { AnalysisFrameInputError, resolveAnalysisFrames } from "@/lib/ai/analysis-frame-input";
 
@@ -44,6 +43,8 @@ export async function POST(request: NextRequest) {
       frames: clientFrames,
       analyzeMode = "single",
       analysisModel,
+      providerId,
+      model,
       provider,
       outputLanguage,
     } = body;
@@ -72,51 +73,35 @@ export async function POST(request: NextRequest) {
       throw error;
     }
 
-    const selectedModel = analysisModel
-      ? resolveAnalysisModel(analysisModel)
-      : resolveLegacyAnalysisProvider(provider);
-    if (!selectedModel) {
+    // 模型来自**当前用户**的提供商目录：`provider:<id>` 取该提供商配置的模型，旧版固定 id 继续兼容
+    const target = await resolveAnalysisTarget(session.user.id, {
+      analysisModel,
+      providerId,
+      model,
+      legacyProvider: provider,
+    });
+    if (!target) {
       return NextResponse.json({ error: "不支持的视频分析模型" }, { status: 400 });
     }
 
-    const effectiveProvider = selectedModel.provider;
-    let apiKeySource: "platform" | "user";
-    let apiKeyOverride: string | undefined;
-
-    if (selectedModel.keySource === "user") {
-      const hasUserKieKey = await getUsableUserAnalyzeApiKeyProvider(session.user.id, "kie");
-      if (!hasUserKieKey) {
-        return NextResponse.json(
-          { error: "请先在设置中保存自己的 KIE API Key", code: "KIE_KEY_REQUIRED" },
-          { status: 400 },
-        );
-      }
-      apiKeySource = "user";
-    } else {
-      const platformKey = resolvePlatformAnalysisApiKey();
-      if (!platformKey) {
-        return NextResponse.json(
-          { error: "平台 KIE API Key 尚未配置", code: "PLATFORM_KIE_KEY_REQUIRED" },
-          { status: 503 },
-        );
-      }
-      try {
-        const quota = await assertTrialQuota(session.user.id);
-        apiKeySource = quota.apiKeySource;
-        apiKeyOverride = platformKey;
-      } catch (error) {
-        const quotaError = trialQuotaResponse(error);
-        if (quotaError) return NextResponse.json(quotaError, { status: 402 });
-        throw error;
-      }
+    // 密钥由服务端按当前用户的提供商配置解析，客户端只能选模型，不能塞 Key
+    const resolvedKey = await resolveAnalysisKey(session.user.id, target);
+    if (!resolvedKey.ok) {
+      return NextResponse.json(
+        { error: resolvedKey.error, code: resolvedKey.code },
+        { status: resolvedKey.status },
+      );
     }
+
+    // 平台试用已移除：分析只花用户自己的 Key（管理员可用自己的服务端 Key）
+    const apiKeySource = resolvedKey.apiKeySource;
 
     // 记录分析开始
     await db.insert(operationLogs).values({
       userId: session.user.id,
       action: "analysis.start",
       resourceType: mediaType,
-      metadata: { mediaUrl, frameCount: frames.length, analyzeMode, provider: effectiveProvider, model: selectedModel.providerModel, analysisModel: selectedModel.id, apiKeySource },
+      metadata: { mediaUrl, frameCount: frames.length, analyzeMode, provider: target.providerId, model: target.model, analysisModel: target.optionId, apiKeySource },
     });
 
     console.log("Calling AI analysis with", frames.length, "frames...");
@@ -124,9 +109,9 @@ export async function POST(request: NextRequest) {
     // 调用 AI 分析（按当前 locale 选择 prompt 模板）
     const result = await analyzeFrames({
       userId: session.user.id,
-      provider: effectiveProvider,
-      model: selectedModel.providerModel,
-      apiKeyOverride,
+      provider: target.providerId,
+      model: target.model,
+      apiKeyOverride: resolvedKey.apiKey,
       frames,
       mode: analyzeMode as "single" | "batch",
       outputLanguage: resolvedLanguage,
@@ -161,7 +146,7 @@ export async function POST(request: NextRequest) {
       action: "analysis.complete",
       resourceType: mediaType,
       resourceId: historyRecord[0].id,
-      metadata: { mediaUrl, frameCount: frames.length, analyzeMode, provider: effectiveProvider, model: selectedModel.providerModel, analysisModel: selectedModel.id, apiKeySource },
+      metadata: { mediaUrl, frameCount: frames.length, analyzeMode, provider: target.providerId, model: target.model, analysisModel: target.optionId, apiKeySource },
     });
 
     return NextResponse.json({

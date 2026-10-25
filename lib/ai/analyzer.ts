@@ -61,11 +61,13 @@ async function callKieChat(
  */
 export async function analyzeFrames(options: AnalyzeOptions): Promise<AnalyzeResult> {
   const { userId, frames, mode, outputLanguage = defaultLocale } = options;
-  const providerId = options.provider?.trim() || (await resolveActiveProviderId());
+  // 配置跟着账号走：scope 就是 userId，读不到别人的提供商
+  const scope = userId;
+  const providerId = options.provider?.trim() || (await resolveActiveProviderId(scope));
 
   let provider: ProviderConfig;
   try {
-    provider = getProviderConfig(providerId);
+    provider = getProviderConfig(scope, providerId);
   } catch (error) {
     return {
       success: false,
@@ -79,17 +81,14 @@ export async function analyzeFrames(options: AnalyzeOptions): Promise<AnalyzeRes
   }
 
   const apiKey = await resolveProviderApiKey(provider, {
-    userId,
+    scope,
     apiKey: options.apiKeyOverride,
   });
 
   if (!apiKey) {
-    const envHint = provider.apiKeyEnv.length > 0
-      ? `（环境变量：${provider.apiKeyEnv.join(" / ")}）`
-      : "";
     return {
       success: false,
-      error: `未找到 ${provider.label} (${providerId}) 的 API Key${envHint}。请在设置中配置，或检查 .env 文件。`,
+      error: `未找到 ${provider.label} (${providerId}) 的 API Key。请在设置页填写你自己的 API Key。`,
     };
   }
 
@@ -111,6 +110,7 @@ export async function analyzeFrames(options: AnalyzeOptions): Promise<AnalyzeRes
     const text = providerId === "kie"
       ? await callKieChat(provider, apiKey, model, messages)
       : (await createChatCompletion({
+        scope,
         provider: providerId,
         model,
         apiKey,
@@ -134,7 +134,7 @@ export async function analyzeFrames(options: AnalyzeOptions): Promise<AnalyzeRes
     });
     return {
       success: false,
-      error: describeAnalysisProviderError(providerId, error, outputLanguage),
+      error: describeAnalysisProviderError(providerId, error, outputLanguage, scope),
     };
   }
 }

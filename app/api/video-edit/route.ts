@@ -66,14 +66,15 @@ async function parseEditInstruction(
 只返回 JSON，不要其他内容。`;
 
   try {
-    const providerId = process.env.VIDEO_EDIT_PROVIDER?.trim() || (await resolveActiveProviderId());
-    const provider = getProviderConfig(providerId);
-    const apiKey = await resolveProviderApiKey(provider, { userId });
+    const providerId = process.env.VIDEO_EDIT_PROVIDER?.trim() || (await resolveActiveProviderId(userId));
+    const provider = getProviderConfig(userId, providerId);
+    const apiKey = await resolveProviderApiKey(provider, { scope: userId });
 
     // 没有可用 Key 时走本地简单解析
     if (!apiKey) return parseSimpleInstruction(prompt);
 
     const completion = await createChatCompletion({
+      scope: userId,
       provider: providerId,
       apiKey,
       messages: [

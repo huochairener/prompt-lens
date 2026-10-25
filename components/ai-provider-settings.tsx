@@ -20,16 +20,17 @@ interface ProviderStatus {
   timeoutMs: number;
   temperature?: number;
   keyStrategy: "platform" | "user" | "either";
-  hasStoredKey: boolean;
-  hasEnvKey: boolean;
-  hasInlineKey: boolean;
-  keySource: "stored" | "inline" | "env" | "none";
+  hasOwnKey: boolean;
   keyHint?: string;
+  hasPlatformKey: boolean;
+  keySource: "own" | "platform" | "none";
   custom: boolean;
   overriddenFields: string[];
   active: boolean;
   enabled: boolean;
   effectiveModel?: string;
+  /** 能否修改连接信息（协议 / baseUrl / 路径）；仅管理员 */
+  editable: boolean;
 }
 
 interface ProviderTest {
@@ -38,6 +39,7 @@ interface ProviderTest {
   model: string;
   endpoint: string;
   latencyMs: number;
+  keySource: "own" | "platform";
   reply?: string;
   error?: string;
 }
@@ -48,6 +50,7 @@ interface ProviderResponse {
   providers: ProviderStatus[];
   allProviders: ProviderStatus[];
   isAdmin: boolean;
+  definitionsEditable: boolean;
 }
 
 interface EditDraft {
@@ -288,14 +291,15 @@ export function AiProviderSettings() {
   };
 
   const keyStatus = (provider: ProviderStatus) => {
-    if (provider.hasStoredKey) return `${t("keyStored")} ${provider.keyHint ?? ""}`.trim();
-    if (provider.hasInlineKey) return t("keyInline");
-    if (provider.hasEnvKey) return t("keyEnv");
+    if (provider.hasOwnKey) return `${t("keyMine")} ${provider.keyHint ?? ""}`.trim();
+    if (provider.hasPlatformKey) return t("keyPlatform");
     if (provider.keyStrategy === "user") return t("keyFromUser");
     return t("keyMissing");
   };
 
   const list = data?.allProviders ?? [];
+  // 内置提供商的连接信息只有管理员能改；模型 / Key / 启用状态谁都能改自己的
+  const canEditDefinitions = Boolean(data?.definitionsEditable);
 
   return (
     <Card className="bg-[#F5F3EC] border-[#D8D5CC]">
@@ -305,6 +309,9 @@ export function AiProviderSettings() {
           {t("description")}
           {data?.activeProviderId ? ` ${t("current", { id: data.activeProviderId })}` : ""}
         </CardDescription>
+        <p className="mt-2 rounded-lg bg-[#D97757]/5 px-3 py-2 text-xs text-[#6B6860]">
+          {t("privateHint")}
+        </p>
       </CardHeader>
       <CardContent className="space-y-3">
         {loading ? (
@@ -368,7 +375,7 @@ export function AiProviderSettings() {
                       <Button
                         variant="outline"
                         size="sm"
-                        disabled={!data?.isAdmin || !provider.enabled || busy !== null}
+                        disabled={!provider.enabled || busy !== null}
                         onClick={() => activate(provider)}
                         className="border-[#C8C4BC] text-[#6B6860] hover:border-[#D97757] hover:text-[#D97757]"
                       >
@@ -388,73 +395,68 @@ export function AiProviderSettings() {
                         setModelInputs((current) => ({ ...current, [provider.id]: event.target.value }))
                       }
                       placeholder={provider.defaultModel || t("modelPlaceholder")}
-                      disabled={!data?.isAdmin}
                       className="h-9 bg-white font-mono text-xs"
                     />
                   </div>
-                  {data?.isAdmin && (
-                    <>
-                      <Button
-                        size="sm"
-                        disabled={busy !== null}
-                        onClick={() => saveModel(provider)}
-                        className="h-9 bg-[#D97757] hover:bg-[#C96848]"
-                      >
-                        {busy === `model:${provider.id}` ? <Spinner size="sm" /> : t("saveModel")}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={busy !== null}
-                        onClick={() => test(provider)}
-                        className="h-9 border-[#C8C4BC] text-[#6B6860]"
-                      >
-                        {busy === `test:${provider.id}` ? <Spinner size="sm" /> : t("test")}
-                      </Button>
-                    </>
-                  )}
-                </div>
-
-                {/* Key：留空表示不修改，只在填写时覆盖 */}
-                {data?.isAdmin && (
-                  <div className="mt-3 flex flex-wrap items-end gap-2">
-                    <div className="min-w-[220px] flex-1">
-                      <label className="mb-1 block text-xs text-[#9C9890]">{t("apiKey")}</label>
-                      <Input
-                        type="password"
-                        value={keyInputs[provider.id] ?? ""}
-                        onChange={(event) =>
-                          setKeyInputs((current) => ({ ...current, [provider.id]: event.target.value }))
-                        }
-                        placeholder={provider.hasStoredKey ? t("apiKeyKeepHint") : t("apiKeyPlaceholder")}
-                        className="h-9 bg-white font-mono text-xs"
-                      />
-                    </div>
+                  <>
+                    <Button
+                      size="sm"
+                      disabled={busy !== null}
+                      onClick={() => saveModel(provider)}
+                      className="h-9 bg-[#D97757] hover:bg-[#C96848]"
+                    >
+                      {busy === `model:${provider.id}` ? <Spinner size="sm" /> : t("saveModel")}
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
                       disabled={busy !== null}
-                      onClick={() => saveKey(provider)}
+                      onClick={() => test(provider)}
                       className="h-9 border-[#C8C4BC] text-[#6B6860]"
                     >
-                      {busy === `key:${provider.id}` ? <Spinner size="sm" /> : t("saveKey")}
+                      {busy === `test:${provider.id}` ? <Spinner size="sm" /> : t("test")}
                     </Button>
-                    {provider.hasStoredKey && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={busy !== null}
-                        onClick={() => clearKey(provider)}
-                        className="h-9 border-[#C8C4BC] text-[#6B6860] hover:border-[#C0453A] hover:text-[#C0453A]"
-                      >
-                        {busy === `clear-key:${provider.id}` ? <Spinner size="sm" /> : t("clearKey")}
-                      </Button>
-                    )}
-                  </div>
-                )}
+                  </>
+                </div>
 
-                {data?.isAdmin && (
-                  <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[#E8E5DC] pt-3">
+                {/* Key：只有自己能看到和修改；留空表示不修改 */}
+                <div className="mt-3 flex flex-wrap items-end gap-2">
+                  <div className="min-w-[220px] flex-1">
+                    <label className="mb-1 block text-xs text-[#9C9890]">{t("apiKey")}</label>
+                    <Input
+                      type="password"
+                      value={keyInputs[provider.id] ?? ""}
+                      onChange={(event) =>
+                        setKeyInputs((current) => ({ ...current, [provider.id]: event.target.value }))
+                      }
+                      placeholder={provider.hasOwnKey ? t("apiKeyKeepHint") : t("apiKeyPlaceholder")}
+                      className="h-9 bg-white font-mono text-xs"
+                    />
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy !== null}
+                    onClick={() => saveKey(provider)}
+                    className="h-9 border-[#C8C4BC] text-[#6B6860]"
+                  >
+                    {busy === `key:${provider.id}` ? <Spinner size="sm" /> : t("saveKey")}
+                  </Button>
+                  {provider.hasOwnKey && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy !== null}
+                      onClick={() => clearKey(provider)}
+                      className="h-9 border-[#C8C4BC] text-[#6B6860] hover:border-[#C0453A] hover:text-[#C0453A]"
+                    >
+                      {busy === `clear-key:${provider.id}` ? <Spinner size="sm" /> : t("clearKey")}
+                    </Button>
+                  )}
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[#E8E5DC] pt-3">
+                  {canEditDefinitions && (
                     <Button
                       variant="ghost"
                       size="sm"
@@ -463,6 +465,7 @@ export function AiProviderSettings() {
                     >
                       {editingId === provider.id ? t("cancel") : t("edit")}
                     </Button>
+                  )}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -479,7 +482,6 @@ export function AiProviderSettings() {
                       )}
                     </Button>
                   </div>
-                )}
 
                 {editingId === provider.id && editDraft && (
                   <div className="mt-3 grid grid-cols-1 gap-3 rounded-lg bg-[#FAF9F5] p-3 md:grid-cols-2">
@@ -597,18 +599,17 @@ export function AiProviderSettings() {
               </div>
             ))}
 
-            {/* 新增提供商 */}
-            {data?.isAdmin && (
-              <div className="rounded-xl border border-dashed border-[#C8C4BC] bg-white/50 p-4">
-                {!showCreate ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowCreate(true)}
-                    className="text-sm text-[#D97757] hover:underline"
-                  >
-                    + {t("addProvider")}
-                  </button>
-                ) : (
+            {/* 新增提供商（只对自己可见） */}
+            <div className="rounded-xl border border-dashed border-[#C8C4BC] bg-white/50 p-4">
+              {!showCreate ? (
+                <button
+                  type="button"
+                  onClick={() => setShowCreate(true)}
+                  className="text-sm text-[#D97757] hover:underline"
+                >
+                  + {t("addProvider")}
+                </button>
+              ) : (
                   <div className="space-y-3">
                     <p className="text-xs text-[#9C9890]">{t("newProviderHint")}</p>
                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -699,11 +700,10 @@ export function AiProviderSettings() {
                   </div>
                 )}
               </div>
-            )}
 
-            {!data?.isAdmin && <p className="text-xs text-[#9C9890]">{t("adminOnly")}</p>}
+            {!canEditDefinitions && <p className="text-xs text-[#9C9890]">{t("adminOnly")}</p>}
 
-            {data?.isAdmin && data.activeProviderId !== data.defaultProviderId && (
+            {data && data.activeProviderId !== data.defaultProviderId && (
               <Button
                 variant="outline"
                 size="sm"
@@ -726,6 +726,9 @@ export function AiProviderSettings() {
             {testResult.ok
               ? t("testOk", { model: testResult.model, ms: testResult.latencyMs })
               : t("testFail", { error: testResult.error ?? "" })}
+            <span className="ml-2 opacity-70">
+              ({t(testResult.keySource === "own" ? "keyMine" : "keyPlatform")})
+            </span>
             {testResult.ok && testResult.reply ? (
               <span className="ml-2 font-mono opacity-80">{testResult.reply}</span>
             ) : null}

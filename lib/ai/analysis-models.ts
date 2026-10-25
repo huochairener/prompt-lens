@@ -1,67 +1,34 @@
 import { getProviderModelPath } from "@/lib/ai/providers/config";
+import type { ProviderScope } from "@/lib/ai/providers/store";
 
-export const ANALYSIS_MODELS = [
-  {
-    id: "platform-gemini-3.8-flash",
-    provider: "kie",
-    providerModel: "gemini-3-8-flash",
-    keySource: "platform",
-  },
-  {
-    id: "kie-gemini-3.8-flash",
-    provider: "kie",
-    providerModel: "gemini-3-8-flash",
-    keySource: "user",
-  },
-  {
-    id: "kie-gemini-3.5-flash",
-    provider: "kie",
-    providerModel: "gemini-3-5-flash-thinking",
-    keySource: "user",
-  },
-  {
-    id: "kie-gemini-2.5-pro",
-    provider: "kie",
-    providerModel: "gemini-2.5-pro",
-    keySource: "user",
-  },
-] as const;
+/**
+ * 旧版分析模型 id → 提供商 + 模型。
+ *
+ * 现在分析页直接传 `provider:<id>`，这里只用于兼容已经打开的旧页面。
+ * **全部走用户自己的 Key**：平台试用已移除，不存在"平台出资"的分析通道。
+ */
+export const LEGACY_ANALYSIS_MODELS: Record<string, { provider: string; model: string }> = {
+  // 历史平台试用通道：保留 id 兼容，但不再使用平台 Key
+  "platform-gemini-3.8-flash": { provider: "kie", model: "gemini-3-8-flash" },
+  "platform-gemini-3.5-flash": { provider: "kie", model: "gemini-3-8-flash" },
+  "platform-gemini-2.5-flash": { provider: "kie", model: "gemini-3-8-flash" },
+  "kie-gemini-3.8-flash": { provider: "kie", model: "gemini-3-8-flash" },
+  "kie-gemini-3.5-flash": { provider: "kie", model: "gemini-3-5-flash-thinking" },
+  "kie-gemini-2.5-flash": { provider: "kie", model: "gemini-3-5-flash-thinking" },
+  "kie-gemini-2.5-pro": { provider: "kie", model: "gemini-2.5-pro" },
+};
 
-export type AnalysisModel = (typeof ANALYSIS_MODELS)[number];
-export type AnalysisModelId = AnalysisModel["id"];
-
-export const DEFAULT_ANALYSIS_MODEL_ID: AnalysisModelId = "platform-gemini-3.8-flash";
+export function resolveLegacyAnalysisModel(
+  modelId: unknown,
+): { provider: string; model: string } | null {
+  if (typeof modelId !== "string") return null;
+  return LEGACY_ANALYSIS_MODELS[modelId.trim()] ?? null;
+}
 
 // KIE channel paths are not interchangeable with request model names.
 // 路径本身配置在 config/ai-providers.json 的 provider.modelPaths 中。
-export function getKieAnalysisPath(model: string): string {
-  const path = getProviderModelPath("kie", model);
+export function getKieAnalysisPath(scope: ProviderScope, model: string): string {
+  const path = getProviderModelPath(scope, "kie", model);
   if (!path) throw new Error(`Unsupported KIE analysis model: ${model}`);
   return path;
-}
-
-export function resolveAnalysisModel(modelId: unknown): AnalysisModel | null {
-  if (typeof modelId !== "string") return null;
-  // Keep already-open clients working after the retired Flash channel is replaced.
-  if (modelId === "platform-gemini-2.5-flash") modelId = DEFAULT_ANALYSIS_MODEL_ID;
-  if (modelId === "platform-gemini-3.5-flash") modelId = DEFAULT_ANALYSIS_MODEL_ID;
-  if (modelId === "kie-gemini-2.5-flash") modelId = "kie-gemini-3.5-flash";
-  return ANALYSIS_MODELS.find((model) => model.id === modelId) || null;
-}
-
-export function resolveLegacyAnalysisProvider(provider: unknown): AnalysisModel | null {
-  if (provider === "kie") return resolveAnalysisModel("kie-gemini-3.5-flash");
-  if (provider === "openrouter" || provider == null) {
-    return resolveAnalysisModel(DEFAULT_ANALYSIS_MODEL_ID);
-  }
-  return null;
-}
-
-export function resolvePlatformAnalysisApiKey(
-  env: { KIE_AI_API_KEY?: string; KIE_API_KEY?: string } = process.env as {
-    KIE_AI_API_KEY?: string;
-    KIE_API_KEY?: string;
-  },
-): string | null {
-  return env.KIE_AI_API_KEY?.trim() || env.KIE_API_KEY?.trim() || null;
 }

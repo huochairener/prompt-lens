@@ -122,7 +122,7 @@ export async function segmentWithLLM(
   provider?: LLMProvider,
   customPrompt?: string
 ): Promise<LLMResult> {
-  const providerId = provider?.trim() || (await resolveActiveProviderId());
+  const providerId = provider?.trim() || (await resolveActiveProviderId(userId));
 
   // 构建系统提示
   const systemPrompt = `你是一个专业的视频剪辑助手，需要根据提供的字幕内容将视频处理成有意义的片段。
@@ -143,8 +143,8 @@ export async function segmentWithLLM(
 \n\n字幕内容：\n${subtitlesContent}`;
 
   try {
-    const providerConfig = getProviderConfig(providerId);
-    const apiKey = await resolveProviderApiKey(providerConfig, { userId });
+    const providerConfig = getProviderConfig(userId, providerId);
+    const apiKey = await resolveProviderApiKey(providerConfig, { scope: userId });
 
     // 没有可用 Key 时退回按句子分段
     if (!apiKey) {
@@ -152,6 +152,7 @@ export async function segmentWithLLM(
     }
 
     const completion = await createChatCompletion({
+      scope: userId,
       provider: providerId,
       apiKey,
       messages: [

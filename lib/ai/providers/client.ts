@@ -4,6 +4,7 @@ import { ensureProviderCatalogFresh, getProviderConfig } from "./config";
 import { resolveProviderEndpoint } from "./endpoint";
 import { ProviderApiKeyError, ProviderConfigError, ProviderRequestError } from "./errors";
 import { getActiveProvider } from "./runtime";
+import type { ProviderScope } from "./store";
 import { ensureProxyTransport } from "./transport";
 import type {
   ChatMessage,
@@ -15,7 +16,9 @@ import type {
 ensureProxyTransport();
 
 export interface ChatCompletionRequest {
-  /** 提供商 id，缺省使用运行时当前提供商 */
+  /** 谁在调用：决定读哪一份提供商配置（每个用户各自一份） */
+  scope: ProviderScope;
+  /** 提供商 id，缺省使用该用户当前提供商 */
   provider?: string;
   /** 模型名，缺省使用提供商配置的 defaultModel */
   model?: string;
@@ -83,10 +86,12 @@ function parsePayload(rawText: string): unknown {
 export async function createChatCompletion(
   request: ChatCompletionRequest,
 ): Promise<ChatCompletionResult> {
-  // 先对齐在线配置：管理员改过 baseUrl / 模型 / Key 之后，下一次请求就生效
-  await ensureProviderCatalogFresh();
+  // 先对齐该用户的在线配置：他在设置页改过 baseUrl / 模型 / Key 之后，下一次请求就生效
+  await ensureProviderCatalogFresh(request.scope);
 
-  const provider = request.provider ? getProviderConfig(request.provider) : getActiveProvider();
+  const provider = request.provider
+    ? getProviderConfig(request.scope, request.provider)
+    : getActiveProvider(request.scope);
 
   const model = request.model?.trim() || provider.defaultModel;
   if (!model) {

@@ -11,7 +11,7 @@ for (const locale of ["zh", "en"]) for (const width of [1440, 390]) {
         const url = new URL(route.request().url());
         let json: unknown = {};
         if (url.pathname.includes("/auth/get-session")) json = { user: { id: "test", name: "Test", email: "test@example.com" }, session: { id: "test", token: "test", expiresAt: new Date(Date.now() + 3600000).toISOString() } };
-        else if (url.pathname === "/api/analyze/quota") json = { limit: 2, used: 0, remaining: 2, hasOwnApiKey: personalKey };
+        else if (url.pathname === "/api/analyze/models") json = { options: [], defaultId: null };
         else if (url.pathname === "/api/video-generate") {
           if (route.request().method() === "POST") { submitted = route.request().postDataJSON(); json = { taskId: "mock-task" }; }
           else json = url.searchParams.has("access") ? { hasOwnApiKey: personalKey } : { records: [] };

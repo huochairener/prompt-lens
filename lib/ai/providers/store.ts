@@ -6,13 +6,12 @@ import type { ProviderOverride, StoredSecret } from "./types";
  * 在线配置的持久化存储。
  *
  * 设计要点：
+ * - **一个用户一行**：`ai_settings.id` 就是 user.id，别人的提供商、模型、Key 读不到也改不了。
  * - 只做"读一行 / 写一行"，不参与配置合并，避免和 config.ts 形成循环依赖。
  * - 数据库通过动态 import 懒加载：单元测试或未配置 DATABASE_URL 时不会因为
  *   导入 lib/db 而创建连接池，配置层仍能退回到 config/ai-providers.json。
  * - 任何读失败都降级为空设置（等同"没有在线配置"），不让页面/接口整体 500。
  */
-
-const SETTINGS_ID = "global";
 
 export interface AiSettingsSnapshot {
   /** 当前生效的提供商 id；null 表示回退到环境变量/文件默认值 */
@@ -26,6 +25,9 @@ export const EMPTY_AI_SETTINGS: AiSettingsSnapshot = {
   overrides: [],
   secrets: {},
 };
+
+export type ProviderScope = string | null;
+export type UserRole = "user" | "admin";
 
 type DbModule = typeof import("@/lib/db");
 
@@ -60,6 +62,13 @@ async function loadDb(): Promise<DbModule | null> {
   }
 }
 
+/** scope 为空（未登录 / 系统基线）时没有数据库行 */
+export function normalizeScope(scope: ProviderScope): string | null {
+  const trimmed = typeof scope === "string" ? scope.trim() : "";
+  return trimmed || null;
+}
+
+
 function isOverride(value: unknown): value is ProviderOverride {
   return Boolean(value) && typeof value === "object" && typeof (value as ProviderOverride).id === "string";
 }
@@ -86,8 +95,10 @@ function normalizeSecrets(value: unknown): Record<string, StoredSecret> {
   return Object.fromEntries(entries);
 }
 
-/** 读取在线配置；不可用时返回空设置 */
-export async function readAiSettings(): Promise<AiSettingsSnapshot> {
+/** 读取某个用户的在线配置；不可用或没有用户时返回空设置 */
+export async function readAiSettings(scope: ProviderScope): Promise<AiSettingsSnapshot> {
+  const userId = normalizeScope(scope);
+  if (!userId) return EMPTY_AI_SETTINGS;
   if (Date.now() < dbCooldownUntil) return EMPTY_AI_SETTINGS;
 
   const mod = await loadDb();
@@ -101,7 +112,7 @@ export async function readAiSettings(): Promise<AiSettingsSnapshot> {
         secrets: mod.aiSettings.secrets,
       })
       .from(mod.aiSettings)
-      .where(eq(mod.aiSettings.id, SETTINGS_ID))
+      .where(eq(mod.aiSettings.id, userId))
       .limit(1);
 
     const row = rows[0];
@@ -125,14 +136,38 @@ export async function readAiSettings(): Promise<AiSettingsSnapshot> {
   }
 }
 
+/** 读取用户角色；用于判断能否修改内置提供商的连接信息 / 引用环境变量 Key */
+export async function readUserRole(scope: ProviderScope): Promise<UserRole> {
+  const userId = normalizeScope(scope);
+  if (!userId) return "admin";
+
+  const mod = await loadDb();
+  if (!mod) return "user";
+
+  try {
+    const row = await mod.db.query.user.findFirst({
+      where: eq(mod.user.id, userId),
+      columns: { role: true },
+    });
+    return row?.role === "admin" ? "admin" : "user";
+  } catch (error) {
+    warnOnce(`读取用户角色失败，按普通用户处理：${error instanceof Error ? error.message : String(error)}`);
+    return "user";
+  }
+}
+
 /**
- * 写入在线配置（整行 upsert）。
- * 调用方负责先读后改，管理端并发很低，这里不做乐观锁。
+ * 写入某个用户的在线配置（整行 upsert）。
+ * 调用方负责先读后改，单用户并发很低，这里不做乐观锁。
  */
 export async function writeAiSettings(
+  scope: ProviderScope,
   next: AiSettingsSnapshot,
   updatedBy?: string | null,
 ): Promise<AiSettingsSnapshot> {
+  const userId = normalizeScope(scope);
+  if (!userId) throw new Error("缺少用户身份，无法保存在线配置");
+
   const mod = await loadDb();
   if (!mod) {
     throw new Error("数据库不可用，无法保存在线配置。请检查 DATABASE_URL 或改用环境变量配置。");
@@ -142,13 +177,13 @@ export async function writeAiSettings(
     activeProviderId: next.activeProviderId,
     overrides: next.overrides,
     secrets: next.secrets,
-    updatedBy: updatedBy ?? null,
+    updatedBy: updatedBy ?? userId,
     updatedAt: new Date(),
   };
 
   await mod.db
     .insert(mod.aiSettings)
-    .values({ id: SETTINGS_ID, ...payload })
+    .values({ id: userId, ...payload })
     .onConflictDoUpdate({ target: mod.aiSettings.id, set: payload });
 
   return next;

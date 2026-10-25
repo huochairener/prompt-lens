@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
-import { db, operationLogs, user } from "@/lib/db";
-import { describeProviders, getActiveProviderId, getDefaultProviderId, refreshProviderCatalog } from "@/lib/ai/providers";
+import { db, operationLogs } from "@/lib/db";
+import {
+  describeProviders,
+  getActiveProviderId,
+  getDefaultProviderId,
+  getProviderCatalog,
+  refreshProviderCatalog,
+} from "@/lib/ai/providers";
 import { PROVIDER_PROTOCOLS } from "@/lib/ai/providers/types";
 import { ProviderConfigError } from "@/lib/ai/providers/errors";
 import {
@@ -21,14 +26,13 @@ import {
 /**
  * AI 提供商在线配置接口。
  *
- * 读：所有登录用户可见（脱敏）；写：仅管理员。
- * 所有写操作都会落到数据库并立刻刷新内存快照，因此不需要重启进程。
+ * **配置跟着账号走**：每个用户只读写自己那一行（`ai_settings.id = user.id`），
+ * 别人配的提供商、模型、Key 既不会出现在列表里，也无法被调用。
+ *
+ * 所有写操作都会落到数据库并立刻刷新该用户的快照，因此不需要重启进程。
+ * 非管理员不能修改内置提供商的连接信息（协议 / baseUrl / 路径），
+ * 否则可以把 baseUrl 指向自己的服务器，顺走平台环境变量里的 Key。
  */
-
-async function isAdmin(userId: string): Promise<boolean> {
-  const currentUser = await db.query.user.findFirst({ where: eq(user.id, userId) });
-  return currentUser?.role === "admin";
-}
 
 async function logChange(
   userId: string,
@@ -48,14 +52,19 @@ async function logChange(
   }
 }
 
-function providerSnapshot() {
+function providerSnapshot(scope: string) {
+  const catalog = getProviderCatalog(scope);
   return {
-    activeProviderId: getActiveProviderId(),
-    defaultProviderId: getDefaultProviderId(),
+    activeProviderId: getActiveProviderId(scope),
+    defaultProviderId: getDefaultProviderId(scope),
     // providers 只含启用的，供切换下拉使用
-    providers: describeProviders(),
+    providers: describeProviders(scope),
     // allProviders 含停用项，供设置页管理
-    allProviders: describeProviders(process.env, { includeDisabled: true }),
+    allProviders: describeProviders(scope, process.env, { includeDisabled: true }),
+    /** 能否修改内置提供商的连接信息（仅管理员） */
+    definitionsEditable: catalog.definitionsEditable,
+    /** 历史字段，等价于 definitionsEditable */
+    isAdmin: catalog.definitionsEditable,
   };
 }
 
@@ -78,7 +87,7 @@ function badRequest(message: string) {
   return NextResponse.json({ error: message }, { status: 400 });
 }
 
-// GET /api/settings/ai-provider - 列出提供商、当前选择、以及可编辑的原始覆盖项
+// GET /api/settings/ai-provider - 列出「我的」提供商、当前选择、以及可编辑的原始覆盖项
 export async function GET(request: NextRequest) {
   try {
     const session = await auth.api.getSession({ headers: request.headers });
@@ -86,12 +95,11 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // 先对齐在线配置，避免新实例返回文件默认值
-    await refreshProviderCatalog();
+    // 先对齐该用户的在线配置，避免新实例返回文件默认值
+    await refreshProviderCatalog(session.user.id);
 
     return NextResponse.json({
-      ...providerSnapshot(),
-      isAdmin: await isAdmin(session.user.id),
+      ...providerSnapshot(session.user.id),
       protocols: PROVIDER_PROTOCOLS,
     });
   } catch (error) {
@@ -100,16 +108,14 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST /api/settings/ai-provider - 切换提供商 / 切换模型 / 测试连通性
+// POST /api/settings/ai-provider - 切换提供商 / 切换模型 / 保存 Key / 测试连通性
 export async function POST(request: NextRequest) {
   try {
     const session = await auth.api.getSession({ headers: request.headers });
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    if (!(await isAdmin(session.user.id))) {
-      return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-    }
+    const scope = session.user.id;
 
     const body = await request.json().catch(() => null);
     const action = typeof body?.action === "string" ? body.action : "activate";
@@ -118,17 +124,17 @@ export async function POST(request: NextRequest) {
       const parsed = switchSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0]?.message ?? "参数不合法");
 
-      const result = await testProvider(parsed.data.providerId, session.user.id);
-      return NextResponse.json({ ...providerSnapshot(), test: result });
+      const result = await testProvider(scope, parsed.data.providerId);
+      return NextResponse.json({ ...providerSnapshot(scope), test: result });
     }
 
     if (action === "set-model") {
       const parsed = modelSchema.safeParse(body);
       if (!parsed.success) return badRequest(parsed.error.issues[0]?.message ?? "参数不合法");
 
-      await saveProviderModel(parsed.data.providerId, parsed.data.model, session.user.id);
-      await logChange(session.user.id, parsed.data.providerId, "set-model", { model: parsed.data.model });
-      return NextResponse.json({ success: true, ...providerSnapshot() });
+      await saveProviderModel(scope, parsed.data.providerId, parsed.data.model, scope);
+      await logChange(scope, parsed.data.providerId, "set-model", { model: parsed.data.model });
+      return NextResponse.json({ success: true, ...providerSnapshot(scope) });
     }
 
     if (action === "set-key") {
@@ -136,14 +142,14 @@ export async function POST(request: NextRequest) {
       if (!parsed.success) return badRequest(parsed.error.issues[0]?.message ?? "参数不合法");
 
       if (parsed.data.clear) {
-        await clearProviderKey(parsed.data.providerId, session.user.id);
-        await logChange(session.user.id, parsed.data.providerId, "clear-key");
+        await clearProviderKey(scope, parsed.data.providerId, scope);
+        await logChange(scope, parsed.data.providerId, "clear-key");
       } else {
         if (!parsed.data.apiKey) return badRequest("缺少 apiKey");
-        await saveProviderKey(parsed.data.providerId, parsed.data.apiKey, session.user.id);
-        await logChange(session.user.id, parsed.data.providerId, "set-key");
+        await saveProviderKey(scope, parsed.data.providerId, parsed.data.apiKey, scope);
+        await logChange(scope, parsed.data.providerId, "set-key");
       }
-      return NextResponse.json({ success: true, ...providerSnapshot() });
+      return NextResponse.json({ success: true, ...providerSnapshot(scope) });
     }
 
     if (action !== "activate") {
@@ -153,12 +159,12 @@ export async function POST(request: NextRequest) {
     const parsed = switchSchema.safeParse(body);
     if (!parsed.success) return badRequest(parsed.error.issues[0]?.message ?? "参数不合法");
 
-    await refreshProviderCatalog();
-    const previousProviderId = getActiveProviderId();
-    await saveActiveProvider(parsed.data.providerId, session.user.id);
-    await logChange(session.user.id, parsed.data.providerId, "activate", { previousProviderId });
+    await refreshProviderCatalog(scope);
+    const previousProviderId = getActiveProviderId(scope);
+    await saveActiveProvider(scope, parsed.data.providerId, scope);
+    await logChange(scope, parsed.data.providerId, "activate", { previousProviderId });
 
-    return NextResponse.json({ success: true, ...providerSnapshot() });
+    return NextResponse.json({ success: true, ...providerSnapshot(scope) });
   } catch (error) {
     if (error instanceof ProviderConfigError) return badRequest(error.message);
     console.error("[ai-provider] 操作失败：", error);
@@ -166,16 +172,14 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// PUT /api/settings/ai-provider - 新增或修改提供商（baseUrl / 协议 / 模型 / Key）
+// PUT /api/settings/ai-provider - 新增或修改「我的」提供商（baseUrl / 协议 / 模型 / Key）
 export async function PUT(request: NextRequest) {
   try {
     const session = await auth.api.getSession({ headers: request.headers });
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    if (!(await isAdmin(session.user.id))) {
-      return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-    }
+    const scope = session.user.id;
 
     const body = await request.json().catch(() => null);
     const parsed = providerUpsertSchema.safeParse(body);
@@ -183,13 +187,13 @@ export async function PUT(request: NextRequest) {
       return badRequest(parsed.error.issues.map((issue) => issue.message).join("；"));
     }
 
-    const result = await upsertProvider(parsed.data, session.user.id);
-    await logChange(session.user.id, parsed.data.id, result.created ? "create-provider" : "update-provider", {
+    const result = await upsertProvider(scope, parsed.data, scope);
+    await logChange(scope, parsed.data.id, result.created ? "create-provider" : "update-provider", {
       keyUpdated: result.keyUpdated,
       keyCleared: result.keyCleared,
     });
 
-    return NextResponse.json({ success: true, ...result, ...providerSnapshot() });
+    return NextResponse.json({ success: true, ...result, ...providerSnapshot(scope) });
   } catch (error) {
     if (error instanceof ProviderConfigError) return badRequest(error.message);
     console.error("[ai-provider] 保存提供商失败：", error);
@@ -198,32 +202,30 @@ export async function PUT(request: NextRequest) {
   }
 }
 
-// DELETE /api/settings/ai-provider?providerId=xxx - 删除在线新增 / 恢复内置默认值
-// 不带 providerId 时：清除在线切换记录，回到默认提供商
+// DELETE /api/settings/ai-provider?providerId=xxx - 删除「我的」在线新增提供商 / 恢复内置默认值
+// 不带 providerId 时：清除我的切换记录，回到默认提供商
 export async function DELETE(request: NextRequest) {
   try {
     const session = await auth.api.getSession({ headers: request.headers });
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    if (!(await isAdmin(session.user.id))) {
-      return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-    }
+    const scope = session.user.id;
 
     const providerId = request.nextUrl.searchParams.get("providerId")?.trim();
 
     if (!providerId) {
-      await refreshProviderCatalog();
-      const previousProviderId = getActiveProviderId();
-      await resetActiveProviderPersisted(session.user.id);
-      await logChange(session.user.id, getActiveProviderId(), "reset-active", { previousProviderId });
-      return NextResponse.json({ success: true, ...providerSnapshot() });
+      await refreshProviderCatalog(scope);
+      const previousProviderId = getActiveProviderId(scope);
+      await resetActiveProviderPersisted(scope, scope);
+      await logChange(scope, getActiveProviderId(scope), "reset-active", { previousProviderId });
+      return NextResponse.json({ success: true, ...providerSnapshot(scope) });
     }
 
-    const result = await removeProviderOverride(providerId, session.user.id);
-    await logChange(session.user.id, providerId, result.mode === "deleted" ? "delete-provider" : "reset-provider");
+    const result = await removeProviderOverride(scope, providerId, scope);
+    await logChange(scope, providerId, result.mode === "deleted" ? "delete-provider" : "reset-provider");
 
-    return NextResponse.json({ success: true, mode: result.mode, ...providerSnapshot() });
+    return NextResponse.json({ success: true, mode: result.mode, ...providerSnapshot(scope) });
   } catch (error) {
     if (error instanceof ProviderConfigError) return badRequest(error.message);
     console.error("[ai-provider] 重置提供商失败：", error);

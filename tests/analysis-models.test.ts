@@ -1,57 +1,43 @@
 import { describe, expect, it } from "vitest";
-import {
-  DEFAULT_ANALYSIS_MODEL_ID,
-  resolvePlatformAnalysisApiKey,
-  resolveAnalysisModel,
-  getKieAnalysisPath,
-} from "@/lib/ai/analysis-models";
+import { getKieAnalysisPath, resolveLegacyAnalysisModel } from "@/lib/ai/analysis-models";
 
 describe("analysis models", () => {
-  it("uses the supported KIE Flash model for the platform trial", () => {
-    expect(resolveAnalysisModel(DEFAULT_ANALYSIS_MODEL_ID)).toMatchObject({
+  it("maps legacy platform ids to a provider model, no platform funding", () => {
+    expect(resolveLegacyAnalysisModel("platform-gemini-3.8-flash")).toEqual({
       provider: "kie",
-      providerModel: "gemini-3-8-flash",
-      keySource: "platform",
+      model: "gemini-3-8-flash",
+    });
+    // 老 id 一律落到同一个通道，且没有任何"平台 Key"标记
+    expect(resolveLegacyAnalysisModel("platform-gemini-2.5-flash")).toEqual({
+      provider: "kie",
+      model: "gemini-3-8-flash",
     });
   });
 
-  it("loads the platform KIE key from server environment variables", () => {
-    expect(resolvePlatformAnalysisApiKey({ KIE_API_KEY: "platform-key" })).toBe("platform-key");
-    expect(resolvePlatformAnalysisApiKey({ KIE_AI_API_KEY: "preferred-key", KIE_API_KEY: "fallback-key" })).toBe("preferred-key");
-  });
-
-  it("offers KIE Flash and Pro through the user's key", () => {
-    expect(resolveAnalysisModel("kie-gemini-3.8-flash")).toMatchObject({
+  it("keeps the KIE user-key models addressable for open tabs", () => {
+    expect(resolveLegacyAnalysisModel("kie-gemini-3.8-flash")).toEqual({
       provider: "kie",
-      providerModel: "gemini-3-8-flash",
-      keySource: "user",
+      model: "gemini-3-8-flash",
     });
-    expect(resolveAnalysisModel("kie-gemini-3.5-flash")).toMatchObject({
+    expect(resolveLegacyAnalysisModel("kie-gemini-3.5-flash")).toEqual({
       provider: "kie",
-      providerModel: "gemini-3-5-flash-thinking",
-      keySource: "user",
+      model: "gemini-3-5-flash-thinking",
     });
-    expect(resolveAnalysisModel("kie-gemini-2.5-pro")).toMatchObject({
+    expect(resolveLegacyAnalysisModel("kie-gemini-2.5-pro")).toEqual({
       provider: "kie",
-      providerModel: "gemini-2.5-pro",
-      keySource: "user",
+      model: "gemini-2.5-pro",
     });
   });
 
   it("rejects unknown model ids", () => {
-    expect(resolveAnalysisModel("other-model")).toBeNull();
-  });
-
-  it("migrates old clients without changing who pays", () => {
-    expect(resolveAnalysisModel("platform-gemini-2.5-flash")).toEqual(resolveAnalysisModel(DEFAULT_ANALYSIS_MODEL_ID));
-    expect(resolveAnalysisModel("platform-gemini-3.5-flash")).toEqual(resolveAnalysisModel(DEFAULT_ANALYSIS_MODEL_ID));
-    expect(resolveAnalysisModel("kie-gemini-2.5-flash")).toEqual(resolveAnalysisModel("kie-gemini-3.5-flash"));
+    expect(resolveLegacyAnalysisModel("other-model")).toBeNull();
+    expect(resolveLegacyAnalysisModel(null)).toBeNull();
   });
 
   it("maps request models to their explicit KIE channels", () => {
-    expect(getKieAnalysisPath("gemini-3-8-flash")).toBe("/gemini-3-8-flash-openai/v1/chat/completions");
-    expect(getKieAnalysisPath("gemini-3-5-flash-thinking")).toBe("/gemini-3-5-flash-openai/v1/chat/completions");
-    expect(getKieAnalysisPath("gemini-2.5-pro")).toBe("/gemini-2.5-pro/v1/chat/completions");
-    expect(() => getKieAnalysisPath("gemini-2.5-flash")).toThrow("Unsupported");
+    expect(getKieAnalysisPath(null, "gemini-3-8-flash")).toBe("/gemini-3-8-flash-openai/v1/chat/completions");
+    expect(getKieAnalysisPath(null, "gemini-3-5-flash-thinking")).toBe("/gemini-3-5-flash-thinking-openai/v1/chat/completions");
+    expect(getKieAnalysisPath(null, "gemini-2.5-pro")).toBe("/gemini-2.5-pro/v1/chat/completions");
+    expect(() => getKieAnalysisPath(null, "gemini-2.5-flash")).toThrow("Unsupported");
   });
 });

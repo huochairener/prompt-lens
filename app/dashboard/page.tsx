@@ -14,6 +14,7 @@ import { VideoEditTab } from "@/components/video-edit-tab";
 import { VideoGenerateTab } from "@/components/video-generate-tab";
 import { FloatingChat } from "@/components/floating-chat";
 import { createImageAnalysisFrame, extractVideoFrameFiles } from "@/lib/utils/frame-extractor";
+import type { AnalysisModelOption } from "@/lib/ai/analysis-options";
 import { uploadAnalysisFrames, uploadMediaToR2 } from "@/lib/r2-client";
 import { cn } from "@/lib/utils";
 import { useTranslations, useLocale } from "next-intl";
@@ -22,13 +23,7 @@ import type { Locale } from "@/i18n/config";
 
 type Tab = "analyze" | "audio" | "edit" | "video-gen" | "history" | "settings";
 
-type TrialAccess = {
-  limit: number;
-  used: number;
-  remaining: number | null;
-  isAdmin: boolean;
-  hasOwnApiKey: boolean;
-};
+/** 分析页模型下拉项，来自 /api/analyze/models（即 AI 提供商目录，类型见 analysis-options） */
 
 export default function DashboardPage() {
   const { data: session, isPending } = useSession();
@@ -49,35 +44,59 @@ export default function DashboardPage() {
   const [preview, setPreview] = useState<string | null>(null);
   const [frameCount, setFrameCount] = useState(8);
   const [analyzeMode, setAnalyzeMode] = useState<"single" | "batch">("single");
-  const [analysisModel, setAnalysisModel] = useState<
-    "platform-gemini-3.8-flash" | "kie-gemini-3.8-flash" | "kie-gemini-3.5-flash" | "kie-gemini-2.5-pro"
-  >("platform-gemini-3.8-flash");
+  const [analysisModel, setAnalysisModel] = useState("");
+  const [modelOptions, setModelOptions] = useState<AnalysisModelOption[]>([]);
+  const [modelOptionsLoading, setModelOptionsLoading] = useState(true);
+  const [modelOptionsError, setModelOptionsError] = useState<string | null>(null);
   const [progress, setProgress] = useState("");
   const [historyRefreshTrigger, setHistoryRefreshTrigger] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
-  const [trialAccess, setTrialAccess] = useState<TrialAccess | null>(null);
-  const [trialAccessLoading, setTrialAccessLoading] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const refreshTrialAccess = useCallback(async () => {
+  // 模型列表直接跟着 AI 提供商配置走：设置页改了模型/Key，这里刷新就能选到
+  const refreshModelOptions = useCallback(async () => {
     if (!session?.user) return;
-    setTrialAccessLoading(true);
+    setModelOptionsLoading(true);
+    setModelOptionsError(null);
     try {
-      const response = await fetch("/api/analyze/quota", { cache: "no-store" });
-      if (response.ok) setTrialAccess(await response.json());
+      const response = await fetch("/api/analyze/models", { cache: "no-store" });
+      if (!response.ok) {
+        setModelOptionsError(t("analyze.modelLoadFailed"));
+        return;
+      }
+      const data = await response.json();
+      const options: AnalysisModelOption[] = Array.isArray(data?.options) ? data.options : [];
+      setModelOptions(options);
+      setAnalysisModel((current) => {
+        if (current && options.some((option) => option.id === current)) return current;
+        return typeof data?.defaultId === "string" && data.defaultId
+          ? data.defaultId
+          : options[0]?.id ?? "";
+      });
+    } catch (error) {
+      console.error("Failed to load analysis models:", error);
+      setModelOptionsError(t("analyze.modelLoadFailed"));
     } finally {
-      setTrialAccessLoading(false);
+      setModelOptionsLoading(false);
     }
-  }, [session?.user]);
+  }, [session?.user, t]);
 
   useEffect(() => {
-    if (activeTab === "analyze") void refreshTrialAccess();
-  }, [activeTab, refreshTrialAccess]);
+    if (activeTab !== "analyze") return;
+    void refreshModelOptions();
+  }, [activeTab, refreshModelOptions]);
 
-  const usesPlatformKey = analysisModel === "platform-gemini-3.8-flash";
-  const platformTrialExhausted = Boolean(
-    trialAccess && !trialAccess.isAdmin && trialAccess.remaining === 0,
-  );
+  const selectedModelOption = modelOptions.find((option) => option.id === analysisModel) ?? null;
+
+  const modelOptionLabel = (option: AnalysisModelOption): string => {
+    const parts = [
+      option.model ? `${option.label} · ${option.model}` : option.label,
+      t(option.funding === "user" ? "analyze.modelOwnKey" : "analyze.modelServerKey"),
+    ];
+    if (option.unavailableReason === "model_missing") parts.push(t("analyze.modelMissing"));
+    if (option.unavailableReason === "key_required") parts.push(t("analyze.modelKeyRequired"));
+    return parts.join(" · ");
+  };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -100,12 +119,15 @@ export default function DashboardPage() {
 
   const handleAnalyze = async () => {
     if (!selectedFile) return;
-    if (usesPlatformKey && platformTrialExhausted) {
-      setResult(`Error: ${t(trialAccess?.hasOwnApiKey ? "analyze.trialExhaustedWithKey" : "analyze.trialExhausted")}`);
+    if (!selectedModelOption) {
+      setResult(`Error: ${t("analyze.noModelOptions")}`);
       return;
     }
-    if (!usesPlatformKey && trialAccess && !trialAccess.hasOwnApiKey) {
-      setResult(`Error: ${t("analyze.ownKeyRequired")}`);
+    if (!selectedModelOption.available) {
+      const hint = selectedModelOption.unavailableReason === "model_missing"
+        ? t("analyze.modelMissing")
+        : t("analyze.modelKeyRequiredHint");
+      setResult(`Error: ${hint}`);
       return;
     }
     setIsLoading(true);
@@ -155,15 +177,11 @@ export default function DashboardPage() {
 
       const data = await analyzeRes.json().catch(() => null);
       if (!analyzeRes.ok) {
-        if (data?.code === "TRIAL_QUOTA_EXCEEDED") {
-          setTrialAccess((current) => current ? { ...current, used: data.used, remaining: 0 } : current);
-        }
         throw new Error(data?.error || t("analyze.analysisFailed"));
       }
       if (!data) throw new Error(t("analyze.analysisFailed"));
       setResult(data.prompt);
       setHistoryRefreshTrigger((prev) => prev + 1);
-      if (usesPlatformKey) void refreshTrialAccess();
     } catch (error: any) {
       setResult(`Error: ${error.message}`);
     } finally {
@@ -339,36 +357,54 @@ export default function DashboardPage() {
                 <label className="text-sm font-medium text-[#141413] block mb-2">{t("analyze.model")}</label>
                 <select
                   value={analysisModel}
-                  onChange={(e) => setAnalysisModel(e.target.value as typeof analysisModel)}
-                  disabled={!trialAccess?.hasOwnApiKey}
-                  className="w-full h-10 px-3 border border-[#C8C4BC] rounded-lg focus:border-[#D97757] outline-none bg-white text-[#141413]"
+                  onChange={(e) => setAnalysisModel(e.target.value)}
+                  disabled={modelOptionsLoading || modelOptions.length === 0}
+                  className="w-full h-10 px-3 border border-[#C8C4BC] rounded-lg focus:border-[#D97757] outline-none bg-white text-[#141413] disabled:bg-[#F0EDE6] disabled:text-[#9C9890]"
                 >
-                  <option value="platform-gemini-3.8-flash" disabled={platformTrialExhausted}>{t("analyze.modelPlatformFlash")}</option>
-                  <option value="kie-gemini-3.8-flash">{t("analyze.modelKie38Flash")}</option>
-                  <option value="kie-gemini-3.5-flash">{t("analyze.modelKieFlash")}</option>
-                  <option value="kie-gemini-2.5-pro">{t("analyze.modelKiePro")}</option>
+                  {modelOptions.length === 0 && (
+                    <option value="">
+                      {modelOptionsLoading ? t("analyze.modelLoading") : "—"}
+                    </option>
+                  )}
+                  {modelOptions.map((option) => (
+                    <option key={option.id} value={option.id} disabled={!option.available}>
+                      {modelOptionLabel(option)}
+                    </option>
+                  ))}
                 </select>
-                {!trialAccessLoading && trialAccess && (
-                  <div className={`mt-2 flex flex-wrap items-center justify-between gap-2 text-sm ${platformTrialExhausted ? "text-[#C0453A]" : "text-[#6B6860]"}`}>
-                    <span>
-                      {trialAccess.isAdmin
-                        ? t("analyze.trialUnlimited")
-                        : platformTrialExhausted
-                          ? t(trialAccess.hasOwnApiKey ? "analyze.trialExhaustedWithKey" : "analyze.trialExhausted")
-                          : t("analyze.trialRemaining", { remaining: trialAccess.remaining, limit: trialAccess.limit })}
-                    </span>
-                    {platformTrialExhausted && !trialAccess.hasOwnApiKey && (
-                      <Button type="button" variant="outline" size="sm" onClick={() => setActiveTab("settings")}>
-                        {t("analyze.configureKieKey")}
-                      </Button>
-                    )}
+                {modelOptionsError && (
+                  <p className="mt-2 text-sm text-[#C0453A]">{modelOptionsError}</p>
+                )}
+                {!modelOptionsLoading && modelOptions.length === 0 && !modelOptionsError && (
+                  <div className="mt-2 flex items-center justify-between gap-2 text-sm text-[#6B6860]">
+                    <span>{t("analyze.noModelOptions")}</span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setActiveTab("settings")}
+                    >
+                      {t("analyze.configureKey")}
+                    </Button>
                   </div>
+                )}
+                {!modelOptionsLoading && modelOptions.length > 0 && !selectedModelOption?.available && (
+                  <p className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm text-[#C0453A]">
+                    <span>
+                      {selectedModelOption?.unavailableReason === "model_missing"
+                        ? t("analyze.modelMissing")
+                        : t("analyze.modelKeyRequiredHint")}
+                    </span>
+                    <Button type="button" variant="outline" size="sm" onClick={() => setActiveTab("settings")}>
+                      {t("analyze.configureKey")}
+                    </Button>
+                  </p>
                 )}
               </div>
 
               <Button
                 onClick={handleAnalyze}
-                disabled={!selectedFile || isLoading || trialAccessLoading || (usesPlatformKey && platformTrialExhausted) || (!usesPlatformKey && Boolean(trialAccess && !trialAccess.hasOwnApiKey))}
+                disabled={!selectedFile || isLoading || modelOptionsLoading || !selectedModelOption?.available}
                 className="w-full h-12 md:h-12 bg-[#D97757] hover:bg-[#C96848] text-white rounded-xl font-medium text-base shadow-sm hover:shadow-md transition-all min-h-[48px]"
               >
                 {isLoading ? (

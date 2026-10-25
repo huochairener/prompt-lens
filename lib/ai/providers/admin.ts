@@ -7,6 +7,7 @@ import {
   setLocalActiveProvider,
 } from "./config";
 import { ProviderConfigError } from "./errors";
+import { readOwnApiKey } from "./keys";
 import { resolveProviderApiKey } from "./resolve-key";
 import { assertProviderUsable } from "./runtime";
 import { encryptSecret, readAiSettings, writeAiSettings, decryptSecret } from "./store";
@@ -15,8 +16,14 @@ import { isProviderProtocol, PROVIDER_PROTOCOLS, type ProviderOverride } from ".
 /**
  * 提供商在线管理（服务端专用）。
  *
- * 所有写操作都是"读当前设置 → 改一份 → 整行写回 → 立刻刷新内存快照"，
+ * 每个用户只读写自己的那一行（`ai_settings.id = user.id`），所以「我配的提供商」
+ * 天然只对我可见。所有写操作都是"读当前设置 → 改一份 → 整行写回 → 立刻刷新快照"，
  * 因此不需要重启进程；其他实例会在 AI_CONFIG_CACHE_MS 内自动追上。
+ *
+ * 权限边界（非管理员）：
+ *   - 不能改内置提供商的 protocol / baseUrl / path（否则可把平台 Key 引到自己服务器）
+ *   - 不能配置 apiKeyEnv（同上）
+ *   - 在线新增的提供商只能用自己保存的 Key
  */
 
 const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
@@ -74,6 +81,22 @@ function toOverridePatch(input: ProviderUpsertInput): Omit<ProviderOverride, "id
   return patch;
 }
 
+/** 非管理员不能碰的字段：改连接信息等于有机会拿走平台 Key */
+function assertScopeCanWrite(
+  editable: boolean,
+  input: ProviderUpsertInput,
+  builtin: boolean,
+): void {
+  if (editable) return;
+
+  if (input.apiKeyEnv !== undefined) {
+    throw new ProviderConfigError("只有管理员可以指定提供商使用的环境变量 Key，请在设置页填写你自己的 Key");
+  }
+  if (builtin && (input.protocol !== undefined || input.baseUrl !== undefined || input.path !== undefined)) {
+    throw new ProviderConfigError("内置提供商的协议 / Base URL / 路径只能由管理员修改");
+  }
+}
+
 export interface UpsertResult {
   providerId: string;
   created: boolean;
@@ -82,20 +105,27 @@ export interface UpsertResult {
 }
 
 /**
- * 新增或修改提供商（含 baseUrl / 协议 / 模型 / Key）。
+ * 新增或修改提供商（含 baseUrl / 协议 / 模型 / Key），只影响当前用户。
  * 内置提供商只写入改动字段；在线新增的提供商会整条落库（custom=true）。
  */
 export async function upsertProvider(
+  scope: string,
   input: ProviderUpsertInput,
   updatedBy?: string | null,
 ): Promise<UpsertResult> {
-  const settings = await readAiSettings();
+  const catalog = await refreshProviderCatalog(scope);
+  // 预置提供商（文件 / AI_PROVIDERS_CONFIG）的 custom=false；用户自己新增的才是 true
+  const existingProvider = findProvider(scope, input.id);
+  const builtin = existingProvider ? !existingProvider.custom : isBaseProvider(input.id);
+
+  const settings = await readAiSettings(scope);
   const existing = settings.overrides.find((item) => item.id === input.id);
-  const builtin = isBaseProvider(input.id);
 
   if (input.createOnly && (existing || builtin)) {
     throw new ProviderConfigError(`提供商 ${input.id} 已存在，请换一个 id 或直接编辑`);
   }
+
+  assertScopeCanWrite(catalog.definitionsEditable, input, builtin);
 
   // 在线新增时必须有完整的连接信息
   if (!builtin) {
@@ -144,11 +174,11 @@ export async function upsertProvider(
       ? null
       : settings.activeProviderId;
 
-  await writeAiSettings({ ...settings, overrides, secrets, activeProviderId }, updatedBy);
-  await refreshProviderCatalog();
+  await writeAiSettings(scope, { ...settings, overrides, secrets, activeProviderId }, updatedBy);
+  await refreshProviderCatalog(scope);
 
   // 确认新配置能被归一化（baseUrl 非法等会被跳过，这里提前暴露而不是等到调用时）
-  if (!findProvider(input.id)) {
+  if (!findProvider(scope, input.id)) {
     throw new ProviderConfigError(
       `配置已保存，但提供商 ${input.id} 无法生效，请检查协议与 baseUrl 是否匹配`,
     );
@@ -164,11 +194,15 @@ export async function upsertProvider(
 
 /** 删除在线新增的提供商；内置提供商则是"恢复文件默认值" */
 export async function removeProviderOverride(
+  scope: string,
   providerId: string,
   updatedBy?: string | null,
 ): Promise<{ mode: "deleted" | "reset" | "none" }> {
-  const settings = await readAiSettings();
+  const settings = await readAiSettings(scope);
   const existing = settings.overrides.find((item) => item.id === providerId);
+  // 用户自己新增的提供商整条删除；预置提供商只是"恢复默认"
+  const provider = findProvider(scope, providerId);
+  const customProvider = provider ? provider.custom : Boolean(existing?.custom);
 
   const secrets = { ...settings.secrets };
   const hadSecret = Boolean(secrets[providerId]);
@@ -176,71 +210,78 @@ export async function removeProviderOverride(
 
   if (!existing) {
     if (hadSecret) {
-      await writeAiSettings({ ...settings, secrets }, updatedBy);
-      await refreshProviderCatalog();
+      await writeAiSettings(scope, { ...settings, secrets }, updatedBy);
+      await refreshProviderCatalog(scope);
       return { mode: "reset" };
     }
     return { mode: "none" };
   }
 
-  const mode = existing.custom || !isBaseProvider(providerId) ? "deleted" : "reset";
+  const mode = customProvider ? "deleted" : "reset";
   const overrides = settings.overrides.filter((item) => item.id !== providerId);
   const activeProviderId =
     settings.activeProviderId === providerId && mode === "deleted" ? null : settings.activeProviderId;
 
-  await writeAiSettings({ ...settings, overrides, secrets, activeProviderId }, updatedBy);
-  await refreshProviderCatalog();
+  await writeAiSettings(scope, { ...settings, overrides, secrets, activeProviderId }, updatedBy);
+  await refreshProviderCatalog(scope);
   return { mode };
 }
 
-/** 切换当前生效的提供商（写库 + 立即刷新） */
+/** 切换当前生效的提供商（写当前用户的那一行 + 立即刷新） */
 export async function saveActiveProvider(
+  scope: string,
   providerId: string,
   updatedBy?: string | null,
 ): Promise<void> {
-  await refreshProviderCatalog();
-  assertProviderUsable(providerId);
+  await refreshProviderCatalog(scope);
+  assertProviderUsable(scope, providerId);
 
-  const settings = await readAiSettings();
-  await writeAiSettings({ ...settings, activeProviderId: providerId }, updatedBy);
-  setLocalActiveProvider(null);
-  await refreshProviderCatalog();
+  const settings = await readAiSettings(scope);
+  await writeAiSettings(scope, { ...settings, activeProviderId: providerId }, updatedBy);
+  setLocalActiveProvider(scope, null);
+  await refreshProviderCatalog(scope);
 }
 
-/** 恢复默认提供商（清掉在线切换记录，回到环境变量/文件默认值） */
-export async function resetActiveProviderPersisted(updatedBy?: string | null): Promise<void> {
-  const settings = await readAiSettings();
-  await writeAiSettings({ ...settings, activeProviderId: null }, updatedBy);
-  setLocalActiveProvider(null);
-  await refreshProviderCatalog();
+/** 恢复默认提供商（清掉当前用户的切换记录，回到环境变量/文件默认值） */
+export async function resetActiveProviderPersisted(
+  scope: string,
+  updatedBy?: string | null,
+): Promise<void> {
+  const settings = await readAiSettings(scope);
+  await writeAiSettings(scope, { ...settings, activeProviderId: null }, updatedBy);
+  setLocalActiveProvider(scope, null);
+  await refreshProviderCatalog(scope);
 }
 
-/** 切换模型：只是 provider 级 defaultModel 的覆盖，不需要重启 */
+/** 切换模型：只是当前用户 provider 级 defaultModel 的覆盖，不需要重启 */
 export async function saveProviderModel(
+  scope: string,
   providerId: string,
   model: string,
   updatedBy?: string | null,
 ): Promise<void> {
   const trimmed = model.trim();
   if (!trimmed) throw new ProviderConfigError("模型名不能为空");
-  await upsertProvider({ id: providerId, model: trimmed }, updatedBy);
+  await upsertProvider(scope, { id: providerId, model: trimmed }, updatedBy);
 }
 
-/** 更换平台 Key */
+/** 保存当前用户在该提供商下的 Key（只对他自己生效） */
 export async function saveProviderKey(
+  scope: string,
   providerId: string,
   apiKey: string,
   updatedBy?: string | null,
 ): Promise<void> {
-  await upsertProvider({ id: providerId, apiKey }, updatedBy);
+  await upsertProvider(scope, { id: providerId, apiKey }, updatedBy);
 }
 
-/** 清除平台 Key（回退到环境变量或用户自备 Key） */
+/** 清除当前用户保存的 Key（回退到 user_api_keys / 平台 Key） */
 export async function clearProviderKey(
+  scope: string,
   providerId: string,
   updatedBy?: string | null,
 ): Promise<void> {
-  await upsertProvider({ id: providerId, clearApiKey: true }, updatedBy);
+  await upsertProvider(scope, { id: providerId, clearApiKey: true }, updatedBy);
 }
 
 export interface ProviderTestResult {
@@ -249,35 +290,38 @@ export interface ProviderTestResult {
   model: string;
   endpoint: string;
   latencyMs: number;
+  /** 这次测试用的是谁的 Key */
+  keySource: "own" | "platform";
   reply?: string;
   error?: string;
 }
 
 /**
- * 连通性测试：用当前生效的 Key 发一条最小请求。
- * 优先用平台 Key（验证刚填的那把），没有平台 Key 才退回用户自备 Key。
+ * 连通性测试：用当前用户实际会用的 Key 发一条最小请求。
+ * 优先用户自己的 Key，没有才退回平台 Key。
  */
 export async function testProvider(
+  scope: string,
   providerId: string,
-  userId?: string,
 ): Promise<ProviderTestResult> {
-  await refreshProviderCatalog();
-  const provider = assertProviderUsable(providerId);
+  await refreshProviderCatalog(scope);
+  const provider = assertProviderUsable(scope, providerId);
 
-  const platformKey = await resolveProviderApiKey(provider, { userId, allowUserKey: false });
-  const apiKey = platformKey ?? (await resolveProviderApiKey(provider, { userId }));
+  const apiKey = await resolveProviderApiKey(provider, { scope });
   if (!apiKey) {
     throw new ProviderConfigError(
-      `提供商 ${provider.label} 没有可用的 Key：请在设置页填写，或配置环境变量 ${provider.apiKeyEnv.join(" / ") || "（未声明）"}`,
+      `提供商 ${provider.label} 还没有可用的 Key。请在下面的输入框填写你自己的 API Key。`,
     );
   }
 
   const model = provider.defaultModel;
   if (!model) throw new ProviderConfigError(`提供商 ${provider.label} 未配置默认模型`);
 
+  const keySource = readOwnApiKey(provider) && readOwnApiKey(provider) === apiKey ? "own" : "platform";
   const startedAt = Date.now();
   try {
     const result = await createChatCompletion({
+      scope,
       provider: provider.id,
       model,
       apiKey,
@@ -293,6 +337,7 @@ export async function testProvider(
       model: result.model,
       endpoint: result.endpoint,
       latencyMs: Date.now() - startedAt,
+      keySource,
       reply: result.text.slice(0, 200),
     };
   } catch (error) {
@@ -302,20 +347,21 @@ export async function testProvider(
       model,
       endpoint: "",
       latencyMs: Date.now() - startedAt,
+      keySource,
       error: error instanceof Error ? error.message : String(error),
     };
   }
 }
 
-/** 供 API 回显：某个 provider 是否已保存在线 Key（不返回明文） */
-export async function getStoredKeyHint(providerId: string): Promise<string | null> {
-  const settings = await readAiSettings();
+/** 供 API 回显：某个 provider 是否已保存了该用户自己的 Key（不返回明文） */
+export async function getStoredKeyHint(scope: string, providerId: string): Promise<string | null> {
+  const settings = await readAiSettings(scope);
   const secret = settings.secrets[providerId];
   if (!secret) return null;
   return decryptSecret(secret) ? secret.hint : `${secret.hint}（解密失败）`;
 }
 
 /** 检测提供商是否存在（不抛错） */
-export function providerExists(providerId: string): boolean {
-  return Boolean(findProvider(providerId));
+export function providerExists(scope: string, providerId: string): boolean {
+  return Boolean(findProvider(scope, providerId));
 }

@@ -230,7 +230,7 @@ export function VideoGenerateTab({ onConfigureApiKey }: { onConfigureApiKey: () 
             <KeyRound className="mt-1 h-5 w-5 shrink-0 text-[#D97757]" />
             <div>
               <h2 className="text-base font-semibold text-[#141413]">{hasOwnApiKey === null ? (zh ? "正在检查个人 API Key" : "Checking your API key") : (zh ? "生成前必须配置自己的 KIE API Key" : "Your own KIE API key is required")}</h2>
-              <p className="mt-1 text-sm leading-relaxed text-[#6B6860]">{zh ? "生成费用由你的 KIE 账户承担，不使用平台额度。" : "Generation is billed to your KIE account, never to platform credits."}</p>
+              <p className="mt-1 text-sm leading-relaxed text-[#6B6860]">{zh ? "生成费用由你的 KIE 账户承担。" : "Generation is billed to your KIE account."}</p>
             </div>
           </div>
           {hasOwnApiKey === false && <div className="flex shrink-0 items-center gap-2">

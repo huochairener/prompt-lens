@@ -24,10 +24,12 @@ function normalizeRole(role: string): ChatRole {
  * base URL / 协议 / 模型全部来自 config/ai-providers.json，不再写死在代码里。
  */
 export async function callAIProvider(options: ChatOptions): Promise<string> {
-  const providerId = options.provider?.trim() || (await resolveActiveProviderId());
-  const provider = getProviderConfig(providerId);
+  // 提供商配置跟着账号走
+  const scope = options.userId;
+  const providerId = options.provider?.trim() || (await resolveActiveProviderId(scope));
+  const provider = getProviderConfig(scope, providerId);
 
-  const apiKey = await resolveProviderApiKey(provider, { userId: options.userId });
+  const apiKey = await resolveProviderApiKey(provider, { scope });
   if (!apiKey) {
     throw new ProviderApiKeyError(provider.id, provider.label, provider.apiKeyEnv);
   }
@@ -38,6 +40,7 @@ export async function callAIProvider(options: ChatOptions): Promise<string> {
   }));
 
   const result = await createChatCompletion({
+    scope,
     provider: providerId,
     apiKey,
     messages,
